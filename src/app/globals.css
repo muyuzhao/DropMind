@@ -1,0 +1,87 @@
+:root {
+  --ink: #20211e;
+  --muted: #77786f;
+  --paper: #f4f1e9;
+  --card: #fffdf7;
+  --line: #d9d4c8;
+  --accent: #ff5c35;
+  --green: #2d5a48;
+}
+
+* { box-sizing: border-box; }
+
+html { background: var(--paper); }
+
+body {
+  margin: 0;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at 90% 5%, rgba(255, 92, 53, 0.09), transparent 24rem),
+    var(--paper);
+  font-family: Arial, "Microsoft YaHei", sans-serif;
+  min-height: 100vh;
+}
+
+a { color: inherit; text-decoration: none; }
+
+.shell { width: min(1120px, calc(100% - 40px)); margin: 0 auto; }
+
+.topbar {
+  height: 84px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 800; letter-spacing: -0.03em; }
+.brand-mark { display: grid; place-items: center; width: 30px; height: 30px; color: white; background: var(--ink); border-radius: 50% 50% 46% 54%; }
+nav { display: flex; gap: 28px; color: var(--muted); font-size: 14px; }
+nav a:hover { color: var(--ink); }
+
+.page { padding: 76px 0 100px; }
+.narrow { width: min(760px, 100%); margin: 0 auto; }
+.eyebrow { color: var(--accent); font-size: 12px; font-weight: 800; letter-spacing: 0.15em; margin-bottom: 20px; }
+h1 { margin: 0; font-family: Georgia, "Songti SC", serif; font-size: clamp(40px, 6vw, 68px); font-weight: 500; line-height: 1.08; letter-spacing: -0.045em; }
+.lede { color: var(--muted); font-size: 17px; line-height: 1.7; margin: 20px 0 0; }
+
+.capture-card { margin-top: 46px; padding: 20px; border: 1px solid var(--line); background: var(--card); box-shadow: 8px 8px 0 #e1dbce; }
+.capture-card label { display: block; font-size: 13px; font-weight: 700; margin-bottom: 12px; }
+textarea { width: 100%; border: 0; border-top: 1px solid var(--line); padding: 22px 0; resize: vertical; outline: 0; background: transparent; color: var(--ink); font: 18px/1.75 Georgia, "Songti SC", serif; }
+textarea::placeholder { color: #aaa69c; }
+.form-footer { border-top: 1px solid var(--line); padding-top: 16px; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.hint { color: var(--muted); font-size: 12px; }
+.error { color: #b12f24; font-size: 13px; }
+button, .primary-link { border: 0; background: var(--ink); color: white; padding: 13px 19px; font: 700 14px Arial, sans-serif; cursor: pointer; }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.notice { background: var(--green); color: white; padding: 12px 16px; margin-bottom: 36px; font-size: 14px; }
+.page-heading { display: flex; justify-content: space-between; align-items: end; gap: 30px; margin-bottom: 54px; }
+.page-heading h1 { font-size: clamp(38px, 5vw, 58px); }
+.item-list { border-top: 1px solid var(--line); }
+.item-card { position: relative; display: block; padding: 28px 52px 28px 0; border-bottom: 1px solid var(--line); transition: padding 160ms ease, background 160ms ease; }
+.item-card:hover { padding-left: 16px; background: rgba(255,255,255,.4); }
+.item-meta, .detail-meta { display: flex; gap: 18px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+.item-meta span { color: var(--accent); font-weight: 700; }
+.item-card p { margin: 13px 0 0; max-width: 850px; font: 21px/1.55 Georgia, "Songti SC", serif; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.open-arrow { position: absolute; right: 4px; top: 50%; font-size: 20px; }
+
+.empty-state { border: 1px dashed #aaa69c; padding: 65px 30px; text-align: center; color: var(--muted); }
+.empty-state span { display: block; color: var(--ink); font: 28px Georgia, serif; }
+.empty-state p { margin: 12px 0 26px; }
+.empty-state a { color: var(--accent); font-weight: 700; }
+.back-link { display: inline-block; color: var(--muted); font-size: 14px; margin-bottom: 60px; }
+.detail-meta { justify-content: space-between; padding-bottom: 18px; border-bottom: 1px solid var(--line); }
+.raw-content { min-height: 260px; padding: 38px 0 60px; white-space: pre-wrap; overflow-wrap: anywhere; font: 24px/1.8 Georgia, "Songti SC", serif; }
+.detail-actions { display: flex; gap: 10px; padding-top: 20px; border-top: 1px solid var(--line); }
+.detail-actions button { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+
+@media (max-width: 640px) {
+  .shell { width: min(100% - 28px, 1120px); }
+  .topbar { height: 68px; }
+  nav { gap: 16px; }
+  .page { padding-top: 48px; }
+  .page-heading { align-items: flex-start; flex-direction: column; }
+  .primary-link { align-self: stretch; text-align: center; }
+  .raw-content { font-size: 20px; }
+}
