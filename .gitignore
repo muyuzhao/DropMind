@@ -367,3 +367,4 @@ FodyWeavers.xsd
 .next/
 node_modules/
 *.tsbuildinfo
+.worktrees/
