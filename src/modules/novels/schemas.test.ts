@@ -12,4 +12,10 @@ describe("novel input schemas", () => {
     expect(saveWorkPositionSchema.parse({ novelId: "x", currentStep: "outlines", currentRangeStart: 21, currentChapter: 18 })).toMatchObject({ currentRangeStart: 21 });
     expect(() => saveWorkPositionSchema.parse({ novelId: "x", currentStep: "outlines", currentRangeStart: 12, currentChapter: 18 })).toThrow();
   });
+
+  it("accepts only real ten-chapter batch starts", async () => {
+    const { saveUnitSchema } = await import("./schemas");
+    expect(saveUnitSchema.safeParse({ novelId: "n1", startChapter: 51, content: "内容", draft: false }).success).toBe(true);
+    expect(saveUnitSchema.safeParse({ novelId: "n1", startChapter: 56, content: "内容", draft: false }).success).toBe(false);
+  });
 });

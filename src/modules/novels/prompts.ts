@@ -15,12 +15,12 @@ export function renderPrompt(template: string, values: Record<string, string | n
 }
 
 type WorkspaceLike = {
-  novel: Record<string, unknown>;
-  templates: Array<Record<string, unknown>>;
-  steps: Array<Record<string, unknown>>;
-  storyUnits: Array<Record<string, unknown>>;
-  chapterOutlines: Array<Record<string, unknown>>;
-  chapters: Array<Record<string, unknown>>;
+  novel: { referenceTitle?: string; referenceSummary?: string; selectedTopic?: string; firstVolumeOutline?: string };
+  templates: Array<{ key?: string; template?: string }>;
+  steps: Array<{ key?: string; content?: string }>;
+  storyUnits: Array<{ startChapter?: number; content?: string }>;
+  chapterOutlines: Array<{ chapterNumber?: number; content?: string }>;
+  chapters: Array<{ chapterNumber?: number; content?: string }>;
 };
 
 export function buildPromptContext(workspace: WorkspaceLike, selection: { step: StepKey; rangeStart?: number; chapter?: number }) {

@@ -1,14 +1,17 @@
 import Link from "next/link";
 import type { StepKey } from "@/lib/novel-db/schema";
 import { NovelCardActions } from "@/components/novels/novel-card-actions";
+import { ImportNovelBackup } from "@/components/novels/import-novel-backup";
 import { novelRepository } from "@/modules/novels/repository";
 import { NOVEL_RANK_LINKS } from "@/modules/novels/rank-links";
 import { formatWorkPosition, normalizeWorkPosition } from "@/modules/novels/work-state";
 
+export const dynamic = "force-dynamic";
+
 export default function NovelsPage() {
   const novels = novelRepository.listNovels();
   return <main className="novel-shell">
-    <header className="novel-header"><div><p className="novel-kicker">本地创作工具</p><h1>小说工作台</h1><p>保存提示词，粘贴 Gemini 结果，一步一步写完第一卷。</p></div><div><Link className="novel-primary" href="/novels/prompts">提示词管理</Link> <Link className="novel-primary" href="/novels/new">新建小说</Link></div></header>
+    <header className="novel-header"><div><p className="novel-kicker">本地创作工具</p><h1>小说工作台</h1><p>保存提示词，粘贴 Gemini 结果，一步一步写完第一卷。</p></div><div className="novel-header-actions"><ImportNovelBackup /><Link className="novel-primary" href="/novels/prompts">提示词管理</Link><Link className="novel-primary" href="/novels/new">新建小说</Link></div></header>
     <section className="novel-rank-links" aria-label="热门小说榜单">
       {NOVEL_RANK_LINKS.map((item) => <a className="novel-rank-card" href={item.href} target="_blank" rel="noreferrer" key={item.href}>
         <span className="novel-kicker">热门参考</span>

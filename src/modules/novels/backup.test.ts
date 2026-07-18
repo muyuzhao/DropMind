@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { exportVolumeText, parseNovelBackup } from "./backup";
+import { createNovelBackup, exportVolumeText, parseNovelBackup } from "./backup";
 
 describe("novel exports", () => {
   it("sorts saved chapters and excludes blank content", () => {
@@ -14,5 +14,25 @@ describe("novel exports", () => {
 
   it("rejects malformed backup JSON", () => {
     expect(() => parseNovelBackup('{"format":"other"}')).toThrow("备份文件");
+  });
+
+  it("keeps old version-one backups compatible by defaulting history to empty", () => {
+    const workspace = {
+      novel: { name: "旧备份", referenceTitle: "参考", referenceSummary: "简介", selectedTopic: "", firstVolumeOutline: "", currentStep: "topics", currentRangeStart: 1, currentChapter: 1 },
+      templates: ["topics", "volumes", "settings", "units", "outlines", "drafts"].map((key) => ({ key, template: key })),
+      steps: [], storyUnits: [], chapterOutlines: [], chapters: [],
+    };
+    const json = JSON.stringify({ format: "dropmind-novel", version: 1, exportedAt: new Date().toISOString(), workspace });
+    expect(parseNovelBackup(json).workspace.contentVersions).toEqual([]);
+  });
+
+  it("exports content history in JSON backups", () => {
+    const backup = JSON.parse(createNovelBackup({
+      novel: { name: "新备份", referenceTitle: "参考", referenceSummary: "简介", selectedTopic: "", firstVolumeOutline: "", currentStep: "topics", currentRangeStart: 1, currentChapter: 1 },
+      templates: ["topics", "volumes", "settings", "units", "outlines", "drafts"].map((key) => ({ key, template: key })),
+      steps: [], storyUnits: [], chapterOutlines: [], chapters: [],
+      contentVersions: [{ contentType: "chapter", contentKey: "1", content: "旧正文", createdAt: 1 }],
+    }));
+    expect(backup.workspace.contentVersions).toHaveLength(1);
   });
 });

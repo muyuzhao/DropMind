@@ -1,21 +1,58 @@
 import { z } from "zod";
+import { chapterStatusValues, stepKeyValues } from "../../lib/novel-db/schema";
+
+const draftFlag = z.union([z.boolean(), z.literal(0), z.literal(1)]).transform(Boolean);
+const batchStart = z.number().int().refine((value) => [1, 11, 21, 31, 41, 51].includes(value));
+const chapterNumber = z.number().int().min(1).max(60);
+
+const backupWorkspaceSchema = z.object({
+  novel: z.object({
+    name: z.string().trim().min(1).max(100),
+    referenceTitle: z.string().max(200),
+    referenceSummary: z.string().max(50_000),
+    selectedTopic: z.string().default(""),
+    firstVolumeOutline: z.string().default(""),
+    currentStep: z.enum(stepKeyValues).default("topics"),
+    currentRangeStart: batchStart.default(1),
+    currentChapter: chapterNumber.default(1),
+  }).passthrough(),
+  templates: z.array(z.object({ key: z.enum(stepKeyValues), template: z.string() }).passthrough()).length(stepKeyValues.length),
+  steps: z.array(z.object({ key: z.enum(stepKeyValues), content: z.string(), isDraft: draftFlag.default(false) }).passthrough()),
+  storyUnits: z.array(z.object({ startChapter: batchStart, endChapter: chapterNumber, content: z.string(), isDraft: draftFlag.default(false) }).passthrough()),
+  chapterOutlines: z.array(z.object({ chapterNumber, content: z.string(), isDraft: draftFlag.default(false) }).passthrough()),
+  chapters: z.array(z.object({ chapterNumber, content: z.string(), status: z.enum(chapterStatusValues), isDraft: draftFlag.default(false) }).passthrough()),
+  contentVersions: z.array(z.object({
+    contentType: z.enum(["step", "novel_field", "story_unit", "outline_batch", "chapter", "template"]),
+    contentKey: z.string(), content: z.string(), createdAt: z.number().int(),
+  }).passthrough()).default([]),
+}).superRefine((workspace, context) => {
+  const templateKeys = workspace.templates.map((row) => row.key);
+  if (new Set(templateKeys).size !== stepKeyValues.length) context.addIssue({ code: "custom", message: "备份中的六套提示词不完整", path: ["templates"] });
+  for (const [field, values] of [
+    ["steps", workspace.steps.map((row) => row.key)],
+    ["storyUnits", workspace.storyUnits.map((row) => row.startChapter)],
+    ["chapterOutlines", workspace.chapterOutlines.map((row) => row.chapterNumber)],
+    ["chapters", workspace.chapters.map((row) => row.chapterNumber)],
+  ] as const) {
+    if (new Set<unknown>(values).size !== values.length) context.addIssue({ code: "custom", message: `备份中的${field}存在重复记录`, path: [field] });
+  }
+  for (const [index, unit] of workspace.storyUnits.entries()) {
+    if (unit.endChapter !== unit.startChapter + 9) context.addIssue({ code: "custom", message: "剧情单元章节范围不一致", path: ["storyUnits", index, "endChapter"] });
+  }
+});
 
 const backupSchema = z.object({
   format: z.literal("dropmind-novel"),
   version: z.literal(1),
   exportedAt: z.string(),
-  workspace: z.object({
-    novel: z.record(z.string(), z.unknown()),
-    templates: z.array(z.record(z.string(), z.unknown())),
-    steps: z.array(z.record(z.string(), z.unknown())),
-    storyUnits: z.array(z.record(z.string(), z.unknown())),
-    chapterOutlines: z.array(z.record(z.string(), z.unknown())),
-    chapters: z.array(z.record(z.string(), z.unknown())),
-  }),
+  workspace: backupWorkspaceSchema,
 });
 
-export function createNovelBackup(workspace: z.infer<typeof backupSchema>["workspace"]) {
-  return JSON.stringify({ format: "dropmind-novel", version: 1, exportedAt: new Date().toISOString(), workspace }, null, 2);
+export type NovelBackupWorkspace = z.infer<typeof backupWorkspaceSchema>;
+
+export function createNovelBackup(workspace: unknown) {
+  const validated = backupWorkspaceSchema.parse(workspace);
+  return JSON.stringify({ format: "dropmind-novel", version: 1, exportedAt: new Date().toISOString(), workspace: validated }, null, 2);
 }
 
 export function parseNovelBackup(json: string) {

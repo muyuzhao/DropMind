@@ -15,7 +15,7 @@ if not exist "node_modules\next\dist\bin\next" (
   if errorlevel 1 pause & exit /b 1
 )
 
-echo Novel Workbench: http://localhost:3000
+echo Novel Workbench: http://127.0.0.1:3000
 echo Keep this window open. Press Ctrl+C to stop.
-node "node_modules\next\dist\bin\next" dev
+node "node_modules\next\dist\bin\next" dev -H 127.0.0.1
 pause

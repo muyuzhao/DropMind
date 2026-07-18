@@ -7,14 +7,13 @@ export type WorkPosition = {
   chapter: number;
 };
 
-type ContentRow = Record<string, unknown>;
-
-type ProgressInput = {
-  novel: Record<string, unknown>;
-  steps: ContentRow[];
-  storyUnits: ContentRow[];
-  chapterOutlines: ContentRow[];
-  chapters: ContentRow[];
+type ContentRow = { content?: string; isDraft?: boolean | number };
+export type ProgressInput = {
+  novel: { selectedTopic?: string; firstVolumeOutline?: string };
+  steps: Array<ContentRow & { key?: StepKey }>;
+  storyUnits: Array<ContentRow & { startChapter?: number }>;
+  chapterOutlines: Array<ContentRow & { chapterNumber?: number }>;
+  chapters: Array<ContentRow & { chapterNumber?: number }>;
 };
 
 function hasSavedContent(row: ContentRow | undefined) {
@@ -32,13 +31,26 @@ export function normalizeWorkPosition(input: Partial<WorkPosition>): WorkPositio
 }
 
 export function nextWorkPosition(position: WorkPosition): WorkPosition | null {
-  if (position.step === "units" || position.step === "outlines") {
-    return position.rangeStart < 51 ? { ...position, rangeStart: position.rangeStart + 10 } : null;
+  if (position.step === "topics") return { step: "volumes", rangeStart: 1, chapter: 1 };
+  if (position.step === "volumes") return { step: "settings", rangeStart: 1, chapter: 1 };
+  if (position.step === "settings") return { step: "units", rangeStart: 1, chapter: 1 };
+  if (position.step === "units") {
+    return position.rangeStart < 51 ? { ...position, rangeStart: position.rangeStart + 10 } : { step: "outlines", rangeStart: 1, chapter: 1 };
+  }
+  if (position.step === "outlines") {
+    return position.rangeStart < 51 ? { ...position, rangeStart: position.rangeStart + 10 } : { step: "drafts", rangeStart: 1, chapter: 1 };
   }
   if (position.step === "drafts") {
     return position.chapter < 60 ? { ...position, chapter: position.chapter + 1 } : null;
   }
   return null;
+}
+
+export function nextWorkActionLabel(position: WorkPosition) {
+  const next = nextWorkPosition(position);
+  if (!next) return null;
+  if (next.step !== position.step) return `保存并进入${stepKeyValues.indexOf(next.step) + 1 === 6 ? "正文" : `第${stepKeyValues.indexOf(next.step) + 1}步`}`;
+  return position.step === "drafts" ? "保存并进入下一章" : "保存并进入下一批";
 }
 
 export function formatWorkPosition(position: WorkPosition) {
@@ -57,11 +69,40 @@ export function buildWorkflowProgress(input: ProgressInput): Record<StepKey, { c
   const completedChapters = new Set(input.chapters.filter(hasSavedContent).map((row) => Number(row.chapterNumber)));
 
   return {
-    topics: { completed: String(input.novel.selectedTopic ?? "").trim() ? 1 : 0, total: 1 },
-    volumes: { completed: savedStep("volumes") ? 1 : 0, total: 1 },
+    topics: { completed: Number(savedStep("topics")) + Number(Boolean(String(input.novel.selectedTopic ?? "").trim())), total: 2 },
+    volumes: { completed: Number(savedStep("volumes")) + Number(Boolean(String(input.novel.firstVolumeOutline ?? "").trim())), total: 2 },
     settings: { completed: savedStep("settings") ? 1 : 0, total: 1 },
     units: { completed: TEN_CHAPTER_RANGES.filter((range) => unitStarts.has(range.start)).length, total: 6 },
     outlines: { completed: TEN_CHAPTER_RANGES.filter((range) => outlineStarts.has(range.start)).length, total: 6 },
     drafts: { completed: Array.from({ length: 60 }, (_, index) => index + 1).filter((chapter) => completedChapters.has(chapter)).length, total: 60 },
+  };
+}
+
+export type WorkflowStepState = "blocked" | "ready" | "in_progress" | "complete";
+export type WorkflowStepOverview = { state: WorkflowStepState; reason: string; completed: number; total: number };
+
+export function buildWorkflowOverview(input: ProgressInput): Record<StepKey, WorkflowStepOverview> {
+  const progress = buildWorkflowProgress(input);
+  const savedStep = (key: StepKey) => hasSavedContent(input.steps.find((row) => row.key === key));
+  const selectedTopic = Boolean(String(input.novel.selectedTopic ?? "").trim());
+  const firstVolumeOutline = Boolean(String(input.novel.firstVolumeOutline ?? "").trim());
+  const savedUnits = progress.units.completed;
+  const savedOutlines = progress.outlines.completed;
+
+  const item = (key: StepKey, blockedReason = ""): WorkflowStepOverview => {
+    const value = progress[key];
+    if (value.completed === value.total) return { ...value, state: "complete", reason: "已完成" };
+    if (blockedReason) return { ...value, state: "blocked", reason: blockedReason };
+    if (value.completed > 0) return { ...value, state: "in_progress", reason: "进行中" };
+    return { ...value, state: "ready", reason: "可以开始" };
+  };
+
+  return {
+    topics: item("topics"),
+    volumes: item("volumes", selectedTopic ? "" : "先确认最终选题"),
+    settings: item("settings", savedStep("volumes") ? "" : "先保存分卷大纲"),
+    units: item("units", !savedStep("settings") ? "先保存核心设定" : firstVolumeOutline ? "" : "先确认本卷大纲"),
+    outlines: item("outlines", savedUnits > 0 ? "" : "先保存剧情单元"),
+    drafts: item("drafts", !savedStep("settings") ? "先保存核心设定" : savedUnits === 0 ? "先保存剧情单元" : savedOutlines > 0 ? "" : "先保存分章大纲"),
   };
 }
