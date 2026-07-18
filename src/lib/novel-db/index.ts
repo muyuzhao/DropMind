@@ -1,0 +1,149 @@
+import fs from "node:fs";
+import path from "node:path";
+import Database from "better-sqlite3";
+import { drizzle } from "drizzle-orm/better-sqlite3";
+import * as schema from "./schema";
+import { DEFAULT_PROMPT_TEMPLATES } from "../../modules/novels/templates";
+import { migrateLegacyBatchTemplate } from "../../modules/novels/batch-workflow-migration";
+import { stripLegacyPlaceholders } from "../../modules/novels/structured-prompts";
+import type { StepKey } from "./schema";
+export const SYSTEM_SCHEME_ID = "system-default";
+
+const CREATE_SCHEMA = `
+PRAGMA foreign_keys = ON;
+CREATE TABLE IF NOT EXISTS novels (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, reference_title TEXT NOT NULL, reference_summary TEXT NOT NULL,
+  selected_topic TEXT NOT NULL DEFAULT '', first_volume_outline TEXT NOT NULL DEFAULT '', prompt_scheme_id TEXT,
+  current_step TEXT NOT NULL DEFAULT 'topics', current_range_start INTEGER NOT NULL DEFAULT 1,
+  current_chapter INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS prompt_templates (
+  id TEXT PRIMARY KEY, novel_id TEXT NOT NULL REFERENCES novels(id) ON DELETE CASCADE, key TEXT NOT NULL,
+  template TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, UNIQUE(novel_id, key)
+);
+CREATE TABLE IF NOT EXISTS prompt_schemes (id TEXT PRIMARY KEY,name TEXT NOT NULL UNIQUE,description TEXT NOT NULL DEFAULT '',is_system INTEGER NOT NULL DEFAULT 0,is_default INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS prompt_scheme_templates (id TEXT PRIMARY KEY,scheme_id TEXT NOT NULL REFERENCES prompt_schemes(id) ON DELETE CASCADE,key TEXT NOT NULL,template TEXT NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,UNIQUE(scheme_id,key));
+CREATE TABLE IF NOT EXISTS app_migrations (key TEXT PRIMARY KEY, applied_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS novel_steps (
+  id TEXT PRIMARY KEY, novel_id TEXT NOT NULL REFERENCES novels(id) ON DELETE CASCADE, key TEXT NOT NULL,
+  content TEXT NOT NULL DEFAULT '', is_draft INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, UNIQUE(novel_id, key)
+);
+CREATE TABLE IF NOT EXISTS story_units (
+  id TEXT PRIMARY KEY, novel_id TEXT NOT NULL REFERENCES novels(id) ON DELETE CASCADE,
+  start_chapter INTEGER NOT NULL, end_chapter INTEGER NOT NULL, content TEXT NOT NULL DEFAULT '',
+  is_draft INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  UNIQUE(novel_id, start_chapter)
+);
+CREATE TABLE IF NOT EXISTS chapter_outlines (
+  id TEXT PRIMARY KEY, novel_id TEXT NOT NULL REFERENCES novels(id) ON DELETE CASCADE,
+  chapter_number INTEGER NOT NULL, content TEXT NOT NULL DEFAULT '', is_draft INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, UNIQUE(novel_id, chapter_number)
+);
+CREATE TABLE IF NOT EXISTS chapters (
+  id TEXT PRIMARY KEY, novel_id TEXT NOT NULL REFERENCES novels(id) ON DELETE CASCADE,
+  chapter_number INTEGER NOT NULL, content TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'not_started',
+  is_draft INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  UNIQUE(novel_id, chapter_number)
+);
+CREATE INDEX IF NOT EXISTS chapter_novel_status ON chapters(novel_id, status);
+CREATE TABLE IF NOT EXISTS content_versions (
+  id TEXT PRIMARY KEY, novel_id TEXT NOT NULL REFERENCES novels(id) ON DELETE CASCADE,
+  content_type TEXT NOT NULL, content_key TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS content_version_lookup ON content_versions(novel_id, content_type, content_key);
+`;
+
+export function initializeNovelDatabase(sqlite: Database.Database) {
+  sqlite.exec(CREATE_SCHEMA);
+  ensurePromptSchemeColumn(sqlite);
+  ensureWorkPositionColumns(sqlite);
+  seedDefaultPromptScheme(sqlite);
+  migrateTenChapterWorkflow(sqlite);
+  migrateStructuredPromptModel(sqlite);
+  return drizzle(sqlite, { schema });
+}
+
+function ensurePromptSchemeColumn(sqlite: Database.Database) {
+  const columns = sqlite.prepare("pragma table_info(novels)").all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "prompt_scheme_id")) sqlite.exec("alter table novels add column prompt_scheme_id TEXT");
+}
+
+function ensureWorkPositionColumns(sqlite: Database.Database) {
+  const columns = sqlite.prepare("pragma table_info(novels)").all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "current_range_start")) sqlite.exec("alter table novels add column current_range_start INTEGER NOT NULL DEFAULT 1");
+  if (!columns.some((column) => column.name === "current_chapter")) sqlite.exec("alter table novels add column current_chapter INTEGER NOT NULL DEFAULT 1");
+}
+
+export function seedDefaultPromptScheme(sqlite: Database.Database) {
+  const now = Date.now();
+  sqlite.prepare("insert or ignore into prompt_schemes (id,name,description,is_system,is_default,created_at,updated_at) values (?,?,?,?,?,?,?)").run(SYSTEM_SCHEME_ID,"系统默认版","内置六步提示词",1,1,now,now);
+  const insert=sqlite.prepare("insert or ignore into prompt_scheme_templates (id,scheme_id,key,template,created_at,updated_at) values (?,?,?,?,?,?)");
+  for(const [key,template] of Object.entries(DEFAULT_PROMPT_TEMPLATES)) insert.run(`${SYSTEM_SCHEME_ID}-${key}`,SYSTEM_SCHEME_ID,key,template,now,now);
+}
+
+export function migrateTenChapterWorkflow(sqlite: Database.Database) {
+  const migrationKey = "ten-chapter-batches-v1";
+  if (sqlite.prepare("select 1 from app_migrations where key = ?").get(migrationKey)) return;
+
+  sqlite.transaction(() => {
+    const now = Date.now();
+    const updateSystem = sqlite.prepare("update prompt_scheme_templates set template = ?, updated_at = ? where scheme_id = ? and key = ?");
+    updateSystem.run(DEFAULT_PROMPT_TEMPLATES.units, now, SYSTEM_SCHEME_ID, "units");
+    updateSystem.run(DEFAULT_PROMPT_TEMPLATES.outlines, now, SYSTEM_SCHEME_ID, "outlines");
+
+    for (const table of ["prompt_scheme_templates", "prompt_templates"] as const) {
+      const rows = sqlite.prepare(`select id,key,template from ${table} where key in ('units','outlines')`).all() as Array<{ id: string; key: StepKey; template: string }>;
+      const update = sqlite.prepare(`update ${table} set template = ?, updated_at = ? where id = ?`);
+      for (const row of rows) {
+        if (table === "prompt_scheme_templates" && row.id.startsWith(`${SYSTEM_SCHEME_ID}-`)) continue;
+        const template = migrateLegacyBatchTemplate(row.key, row.template);
+        if (template !== row.template) update.run(template, now, row.id);
+      }
+    }
+
+    sqlite.prepare("delete from story_units").run();
+    sqlite.prepare("delete from chapter_outlines").run();
+    sqlite.prepare("insert into app_migrations (key,applied_at) values (?,?)").run(migrationKey, now);
+  })();
+}
+
+export function migrateStructuredPromptModel(sqlite: Database.Database) {
+  const migrationKey = "structured-prompts-v1";
+  if (sqlite.prepare("select 1 from app_migrations where key=?").get(migrationKey)) return;
+  sqlite.transaction(() => {
+    const timestamp = Date.now();
+    const updateSystem = sqlite.prepare("update prompt_scheme_templates set template=?,updated_at=? where scheme_id=? and key=?");
+    for (const [key, template] of Object.entries(DEFAULT_PROMPT_TEMPLATES)) updateSystem.run(template, timestamp, SYSTEM_SCHEME_ID, key);
+    for (const table of ["prompt_scheme_templates", "prompt_templates"] as const) {
+      const rows = sqlite.prepare(`select id,template from ${table}`).all() as Array<{ id: string; template: string }>;
+      const update = sqlite.prepare(`update ${table} set template=?,updated_at=? where id=?`);
+      for (const row of rows) {
+        const instruction = stripLegacyPlaceholders(row.template);
+        if (instruction !== row.template) update.run(instruction, timestamp, row.id);
+      }
+    }
+    const schemeRows = sqlite.prepare("select scheme_id,key,template from prompt_scheme_templates order by key").all() as Array<{ scheme_id: string; key: string; template: string }>;
+    const schemeSignatures = new Map<string, string>();
+    for (const scheme of sqlite.prepare("select id from prompt_schemes").all() as Array<{ id: string }>) {
+      const rows = schemeRows.filter((row) => row.scheme_id === scheme.id);
+      if (rows.length === 6) schemeSignatures.set(scheme.id, JSON.stringify(rows.map((row) => [row.key, row.template])));
+    }
+    for (const novel of sqlite.prepare("select id from novels where prompt_scheme_id is null").all() as Array<{ id: string }>) {
+      const rows = sqlite.prepare("select key,template from prompt_templates where novel_id=? order by key").all(novel.id) as Array<{ key: string; template: string }>;
+      const signature = JSON.stringify(rows.map((row) => [row.key, row.template]));
+      const matches = [...schemeSignatures].filter(([, value]) => value === signature);
+      if (matches.length === 1) sqlite.prepare("update novels set prompt_scheme_id=? where id=?").run(matches[0][0], novel.id);
+    }
+    sqlite.prepare("insert into app_migrations (key,applied_at) values (?,?)").run(migrationKey, timestamp);
+  })();
+}
+
+const globalForNovelDb = globalThis as unknown as { novelSqlite?: Database.Database };
+const dataDir = path.join(process.cwd(), "data");
+fs.mkdirSync(dataDir, { recursive: true });
+const sqlite = globalForNovelDb.novelSqlite ?? new Database(path.join(dataDir, "novels.db"));
+if (process.env.NODE_ENV !== "production") globalForNovelDb.novelSqlite = sqlite;
+
+export const novelDb = initializeNovelDatabase(sqlite);
+export { sqlite as novelSqlite };

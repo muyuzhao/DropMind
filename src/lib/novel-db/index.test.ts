@@ -1,0 +1,77 @@
+import Database from "better-sqlite3";
+import { describe, expect, it } from "vitest";
+import { initializeNovelDatabase } from "./index";
+import { stepKeyValues } from "./schema";
+
+describe("initializeNovelDatabase", () => {
+  it("creates every novel workbench table", () => {
+    const sqlite = new Database(":memory:");
+    initializeNovelDatabase(sqlite);
+
+    const names = sqlite.prepare("select name from sqlite_master where type = 'table'").all() as Array<{ name: string }>;
+    expect(names.map((row) => row.name)).toEqual(expect.arrayContaining([
+      "novels", "prompt_templates", "prompt_schemes", "prompt_scheme_templates", "novel_steps", "story_units", "chapter_outlines", "chapters", "content_versions", "app_migrations",
+    ]));
+  });
+
+  it("adds work position columns to an existing novels table", () => {
+    const sqlite = new Database(":memory:");
+    sqlite.exec(`create table novels (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, reference_title TEXT NOT NULL, reference_summary TEXT NOT NULL,
+      selected_topic TEXT NOT NULL DEFAULT '', first_volume_outline TEXT NOT NULL DEFAULT '',
+      current_step TEXT NOT NULL DEFAULT 'topics', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+    )`);
+    sqlite.prepare("insert into novels (id,name,reference_title,reference_summary,created_at,updated_at) values (?,?,?,?,?,?)")
+      .run("legacy", "旧小说", "参考", "简介", 1, 1);
+
+    initializeNovelDatabase(sqlite);
+
+    expect(sqlite.prepare("select current_range_start,current_chapter from novels where id=?").get("legacy"))
+      .toMatchObject({ current_range_start: 1, current_chapter: 1 });
+  });
+
+  it("clears incompatible step 4 and 5 content only once", () => {
+    const sqlite = new Database(":memory:");
+    initializeNovelDatabase(sqlite);
+    sqlite.prepare("delete from app_migrations where key = ?").run("ten-chapter-batches-v1");
+    sqlite.prepare("insert into novels (id,name,reference_title,reference_summary,created_at,updated_at) values (?,?,?,?,?,?)")
+      .run("novel-1", "测试小说", "参考书", "简介", 1, 1);
+    sqlite.prepare("insert into story_units (id,novel_id,start_chapter,end_chapter,content,created_at,updated_at) values (?,?,?,?,?,?,?)")
+      .run("unit-1", "novel-1", 1, 5, "旧剧情单元", 1, 1);
+    sqlite.prepare("insert into chapter_outlines (id,novel_id,chapter_number,content,created_at,updated_at) values (?,?,?,?,?,?)")
+      .run("outline-1", "novel-1", 1, "旧分章大纲", 1, 1);
+
+    initializeNovelDatabase(sqlite);
+
+    expect(sqlite.prepare("select count(*) count from story_units").get()).toMatchObject({ count: 0 });
+    expect(sqlite.prepare("select count(*) count from chapter_outlines").get()).toMatchObject({ count: 0 });
+    expect(sqlite.prepare("select count(*) count from app_migrations where key = ?").get("ten-chapter-batches-v1")).toMatchObject({ count: 1 });
+
+    sqlite.prepare("insert into story_units (id,novel_id,start_chapter,end_chapter,content,created_at,updated_at) values (?,?,?,?,?,?,?)")
+      .run("unit-2", "novel-1", 1, 10, "新剧情单元", 2, 2);
+    initializeNovelDatabase(sqlite);
+    expect(sqlite.prepare("select count(*) count from story_units").get()).toMatchObject({ count: 1 });
+  });
+
+  it("migrates legacy prompt variables without deleting saved novel content", () => {
+    const sqlite = new Database(":memory:");
+    initializeNovelDatabase(sqlite);
+    sqlite.prepare("delete from app_migrations where key = ?").run("structured-prompts-v1");
+    sqlite.prepare("insert into novels (id,name,reference_title,reference_summary,created_at,updated_at) values (?,?,?,?,?,?)")
+      .run("novel-1", "测试小说", "参考书", "简介", 1, 1);
+    const insertTemplate = sqlite.prepare("insert into prompt_templates (id,novel_id,key,template,created_at,updated_at) values (?,?,?,?,?,?)");
+    for (const key of stepKeyValues) {
+      insertTemplate.run(`template-${key}`, "novel-1", key, `【{{selected_topic}}】\n保留-${key}-创作要求`, 1, 1);
+    }
+    sqlite.prepare("insert into novel_steps (id,novel_id,key,content,is_draft,created_at,updated_at) values (?,?,?,?,?,?,?)")
+      .run("step-1", "novel-1", "settings", "已经保存的核心设定", 0, 1, 1);
+
+    initializeNovelDatabase(sqlite);
+
+    const templates = sqlite.prepare("select template from prompt_templates where novel_id=?").all("novel-1") as Array<{ template: string }>;
+    expect(templates).toHaveLength(6);
+    expect(templates.every((row) => !row.template.includes("{{"))).toBe(true);
+    expect(templates.every((row) => row.template.includes("创作要求"))).toBe(true);
+    expect(sqlite.prepare("select content from novel_steps where id=?").get("step-1")).toMatchObject({ content: "已经保存的核心设定" });
+  });
+});
