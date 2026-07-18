@@ -1,9 +1,19 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { rangeForChapter } from "./ranges";
-import type { NovelWorkspace } from "./repository";
+import type { NovelWorkspaceData } from "./types";
 
 type ProjectOptions = { rootDir?: string };
+export type CodexChapterPhase = "not_initialized" | "synced" | "task_ready" | "file_ready" | "imported";
+export type CodexChapterState = {
+  phase: CodexChapterPhase;
+  projectExists: boolean;
+  taskChapter: number | null;
+  fileExists: boolean;
+  fileModifiedAt: number | null;
+  missing: string[];
+};
 
 function mainWorkspaceRoot(cwd = process.cwd()) {
   const marker = `${path.sep}.worktrees${path.sep}`;
@@ -38,17 +48,23 @@ function markdown(title: string, content: string) {
 
 function writeText(filePath: string, content: string) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, content, "utf8");
+  const temporaryPath = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
+  try {
+    fs.writeFileSync(temporaryPath, content, "utf8");
+    fs.renameSync(temporaryPath, filePath);
+  } finally {
+    if (fs.existsSync(temporaryPath)) fs.rmSync(temporaryPath, { force: true });
+  }
 }
 
-function novelIdentity(workspace: NovelWorkspace) {
+function novelIdentity(workspace: NovelWorkspaceData) {
   return {
     id: String(workspace.novel.id),
     name: String(workspace.novel.name),
   };
 }
 
-export function getNovelCodexProjectInfo(workspace: NovelWorkspace, options: ProjectOptions = {}) {
+export function getNovelCodexProjectInfo(workspace: NovelWorkspaceData, options: ProjectOptions = {}) {
   const { id, name } = novelIdentity(workspace);
   const rootDir = getNovelProjectsRoot(options);
   const suffix = `-${id.slice(0, 8)}`;
@@ -61,15 +77,15 @@ export function getNovelCodexProjectInfo(workspace: NovelWorkspace, options: Pro
   return { projectDir, folderName, exists: fs.existsSync(projectDir) };
 }
 
-function stepContent(workspace: NovelWorkspace, key: string) {
+function stepContent(workspace: NovelWorkspaceData, key: string) {
   return String(workspace.steps.find((row) => row.key === key)?.content ?? "");
 }
 
-function draftInstruction(workspace: NovelWorkspace) {
+function draftInstruction(workspace: NovelWorkspaceData) {
   return String(workspace.templates.find((row) => row.key === "drafts")?.template ?? "");
 }
 
-function groupedChapterOutlines(workspace: NovelWorkspace) {
+function groupedChapterOutlines(workspace: NovelWorkspaceData) {
   const grouped = new Map<number, string>();
   for (const row of workspace.chapterOutlines) {
     const chapterNumber = Number(row.chapterNumber);
@@ -80,7 +96,7 @@ function groupedChapterOutlines(workspace: NovelWorkspace) {
   return grouped;
 }
 
-export function syncNovelCodexProject(workspace: NovelWorkspace, options: ProjectOptions = {}) {
+export function syncNovelCodexProject(workspace: NovelWorkspaceData, options: ProjectOptions = {}) {
   const info = getNovelCodexProjectInfo(workspace, options);
   const { projectDir } = info;
   const novel = workspace.novel;
@@ -114,7 +130,7 @@ export function syncNovelCodexProject(workspace: NovelWorkspace, options: Projec
   return { ...info, exists: true };
 }
 
-function requiredTaskContent(workspace: NovelWorkspace, chapterNumber: number) {
+function taskRequirements(workspace: NovelWorkspaceData, chapterNumber: number) {
   const range = rangeForChapter(chapterNumber);
   const missing: string[] = [];
   if (!stepContent(workspace, "settings").trim()) missing.push("核心设定");
@@ -123,11 +139,38 @@ function requiredTaskContent(workspace: NovelWorkspace, chapterNumber: number) {
   if (!workspace.storyUnits.some((row) => Number(row.startChapter) === range.start && String(row.content ?? "").trim())) missing.push(`第${range.start}-${range.end}章剧情单元`);
   if (!workspace.chapterOutlines.some((row) => Number(row.chapterNumber) === chapterNumber && String(row.content ?? "").trim())) missing.push(`第${chapterNumber}章分章大纲`);
   if (chapterNumber > 1 && !workspace.chapters.some((row) => Number(row.chapterNumber) === chapterNumber - 1 && String(row.content ?? "").trim())) missing.push(`第${chapterNumber - 1}章正文`);
-  if (missing.length) throw new Error(`准备Codex任务前还缺少：${missing.join("、")}`);
-  return range;
+  return { range, missing };
 }
 
-export function prepareCodexChapterTask(workspace: NovelWorkspace, chapterNumber: number, options: ProjectOptions = {}) {
+function requiredTaskContent(workspace: NovelWorkspaceData, chapterNumber: number) {
+  const requirements = taskRequirements(workspace, chapterNumber);
+  if (requirements.missing.length) throw new Error(`准备Codex任务前还缺少：${requirements.missing.join("、")}`);
+  return requirements.range;
+}
+
+export function inspectCodexChapterState(workspace: NovelWorkspaceData, chapterNumber: number, options: ProjectOptions = {}): CodexChapterState {
+  const info = getNovelCodexProjectInfo(workspace, options);
+  const { missing } = taskRequirements(workspace, chapterNumber);
+  if (!info.exists) return { phase: "not_initialized", projectExists: false, taskChapter: null, fileExists: false, fileModifiedAt: null, missing };
+
+  const taskPath = path.join(info.projectDir, "当前任务.md");
+  const taskText = fs.existsSync(taskPath) ? fs.readFileSync(taskPath, "utf8") : "";
+  const taskMatch = taskText.match(/^# 当前任务：创作第(\d+)章正文/m);
+  const taskChapter = taskMatch ? Number(taskMatch[1]) : null;
+  const filePath = path.join(info.projectDir, "正文", `第${chapterLabel(chapterNumber)}章.md`);
+  const fileExists = fs.existsSync(filePath) && fs.statSync(filePath).size > 0;
+  const fileModifiedAt = fileExists ? fs.statSync(filePath).mtimeMs : null;
+  const fileContent = fileExists ? fs.readFileSync(filePath, "utf8").trim() : "";
+  const databaseContent = String(workspace.chapters.find((row) => Number(row.chapterNumber) === chapterNumber)?.content ?? "").trim();
+
+  let phase: CodexChapterPhase = "synced";
+  if (fileExists && databaseContent && fileContent === databaseContent) phase = "imported";
+  else if (fileExists) phase = "file_ready";
+  else if (taskChapter === chapterNumber) phase = "task_ready";
+  return { phase, projectExists: true, taskChapter, fileExists, fileModifiedAt, missing };
+}
+
+export function prepareCodexChapterTask(workspace: NovelWorkspaceData, chapterNumber: number, options: ProjectOptions = {}) {
   const range = requiredTaskContent(workspace, chapterNumber);
   const info = syncNovelCodexProject(workspace, options);
   const previous = chapterNumber > 1 ? `- 正文/第${chapterLabel(chapterNumber - 1)}章.md` : "- 本章为第一章，无上一章正文";
@@ -137,14 +180,14 @@ export function prepareCodexChapterTask(workspace: NovelWorkspace, chapterNumber
   return { ...info, taskPath, command: "执行当前任务" };
 }
 
-export function writeCodexChapter(workspace: NovelWorkspace, chapterNumber: number, content: string, options: ProjectOptions = {}) {
+export function writeCodexChapter(workspace: NovelWorkspaceData, chapterNumber: number, content: string, options: ProjectOptions = {}) {
   const info = syncNovelCodexProject(workspace, options);
   const filePath = path.join(info.projectDir, "正文", `第${chapterLabel(chapterNumber)}章.md`);
   writeText(filePath, content.trim());
   return { ...info, filePath };
 }
 
-export function readCodexChapter(workspace: NovelWorkspace, chapterNumber: number, options: ProjectOptions = {}) {
+export function readCodexChapter(workspace: NovelWorkspaceData, chapterNumber: number, options: ProjectOptions = {}) {
   const info = getNovelCodexProjectInfo(workspace, options);
   const filePath = path.join(info.projectDir, "正文", `第${chapterLabel(chapterNumber)}章.md`);
   if (!fs.existsSync(filePath)) throw new Error(`还没有找到本地正文：${filePath}`);

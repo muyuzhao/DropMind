@@ -3,9 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { initializeNovelDatabase } from "../../lib/novel-db";
+import { initializeNovelDatabase } from "../../lib/novel-db/initialize";
 import { createNovelRepository } from "./repository";
-import { prepareCodexChapterTask, readCodexChapter, syncNovelCodexProject, writeCodexChapter } from "./codex-project";
+import { inspectCodexChapterState, prepareCodexChapterTask, readCodexChapter, syncNovelCodexProject, writeCodexChapter } from "./codex-project";
 
 describe("Codex novel project files", () => {
   let rootDir: string;
@@ -50,6 +50,7 @@ describe("Codex novel project files", () => {
     expect(fs.readFileSync(result.taskPath, "utf8")).toContain("正文/第001章.md");
     expect(fs.readFileSync(result.taskPath, "utf8")).toContain("正文/第002章.md");
     expect(result.command).toBe("执行当前任务");
+    expect(inspectCodexChapterState(workspace, 2, { rootDir })).toMatchObject({ phase: "task_ready", taskChapter: 2, fileExists: false });
   });
 
   it("preserves a Codex-written body during material sync and supports explicit import/export", () => {
@@ -59,9 +60,13 @@ describe("Codex novel project files", () => {
     fs.writeFileSync(bodyPath, "Codex新正文", "utf8");
 
     syncNovelCodexProject(workspace, { rootDir });
+    expect(inspectCodexChapterState(workspace, 1, { rootDir }).phase).toBe("file_ready");
     expect(readCodexChapter(workspace, 1, { rootDir }).content).toBe("Codex新正文");
 
-    writeCodexChapter(workspace, 1, "工作台保存正文", { rootDir });
+    repo.saveChapter(String(workspace.novel.id), 1, "工作台保存正文", "saved", false);
+    const refreshed = repo.getNovelWorkspace(String(workspace.novel.id))!;
+    writeCodexChapter(refreshed, 1, "工作台保存正文", { rootDir });
     expect(fs.readFileSync(bodyPath, "utf8")).toBe("工作台保存正文");
+    expect(inspectCodexChapterState(refreshed, 1, { rootDir }).phase).toBe("imported");
   });
 });

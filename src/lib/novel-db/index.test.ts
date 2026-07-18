@@ -1,6 +1,9 @@
 import Database from "better-sqlite3";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { initializeNovelDatabase } from "./index";
+import { initializeNovelDatabase } from "./initialize";
 import { stepKeyValues } from "./schema";
 
 describe("initializeNovelDatabase", () => {
@@ -51,6 +54,31 @@ describe("initializeNovelDatabase", () => {
       .run("unit-2", "novel-1", 1, 10, "新剧情单元", 2, 2);
     initializeNovelDatabase(sqlite);
     expect(sqlite.prepare("select count(*) count from story_units").get()).toMatchObject({ count: 1 });
+  });
+
+  it("creates a consistent snapshot before a destructive file migration", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "dropmind-migration-"));
+    const databasePath = path.join(directory, "novels.db");
+    const sqlite = new Database(databasePath);
+    try {
+      initializeNovelDatabase(sqlite);
+      sqlite.prepare("delete from app_migrations where key = ?").run("ten-chapter-batches-v1");
+      sqlite.prepare("insert into novels (id,name,reference_title,reference_summary,created_at,updated_at) values (?,?,?,?,?,?)")
+        .run("novel-1", "测试小说", "参考书", "简介", 1, 1);
+      sqlite.prepare("insert into story_units (id,novel_id,start_chapter,end_chapter,content,created_at,updated_at) values (?,?,?,?,?,?,?)")
+        .run("unit-1", "novel-1", 1, 5, "待备份的旧剧情单元", 1, 1);
+
+      initializeNovelDatabase(sqlite);
+
+      const backups = fs.readdirSync(path.join(directory, "backups"));
+      expect(backups).toHaveLength(1);
+      const backup = new Database(path.join(directory, "backups", backups[0]), { readonly: true });
+      expect(backup.prepare("select content from story_units where id=?").get("unit-1")).toMatchObject({ content: "待备份的旧剧情单元" });
+      backup.close();
+    } finally {
+      sqlite.close();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("migrates legacy prompt variables without deleting saved novel content", () => {
