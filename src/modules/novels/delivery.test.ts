@@ -44,6 +44,20 @@ describe("fanqie delivery repository", () => {
     expect(delivery.updateFromExtension(token, claimed.id, "submitted").status).toBe("submitted");
   });
 
+  it("claims the exact job selected from the workbench and can resume it", () => {
+    const firstNovel = savedChapter();
+    const first = delivery.queueChapter(firstNovel.id, 1, "2026-07-20");
+    const secondNovel = novels.createNovel({ name: "第二部作品", referenceTitle: "参考", referenceSummary: "简介" });
+    novels.saveChapter(secondNovel.id, 1, "第二部正文", "saved", false, "第二部首章");
+    delivery.saveTarget({ novelId: secondNovel.id, bookName: "番茄第二部", manageUrl: "https://fanqienovel.com/main/writer/book-manage", defaultVolume: "第一卷" });
+    const second = delivery.queueChapter(secondNovel.id, 1, "2026-07-21");
+    const token = delivery.getNovelState(firstNovel.id).connectionToken;
+
+    expect(delivery.claimNext(token, second.id)).toMatchObject({ id: second.id, status: "claimed", novelName: "第二部作品" });
+    expect(delivery.claimNext(token, second.id)).toMatchObject({ id: second.id, status: "claimed" });
+    expect(delivery.getNovelState(firstNovel.id).jobs[0]).toMatchObject({ id: first.id, status: "ready" });
+  });
+
   it("marks a queued snapshot stale when the chapter changes", () => {
     const novel = savedChapter();
     delivery.queueChapter(novel.id, 1, "2026-07-20");

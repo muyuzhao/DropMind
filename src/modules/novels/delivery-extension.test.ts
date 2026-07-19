@@ -34,7 +34,19 @@ describe("Fanqie delivery extension formatting", () => {
 
   it("loads the formatter before the content script", () => {
     const manifest = JSON.parse(fs.readFileSync(path.join(process.cwd(), "browser-extension", "fanqie-delivery", "manifest.json"), "utf8"));
+    expect(manifest.version).toBe("0.3.0");
     expect(manifest.content_scripts[0].js).toEqual(["format.js", "publisher.js", "content.js"]);
+  });
+
+  it("persists and resumes one-click delivery across Fanqie page navigation", () => {
+    const extensionDirectory = path.join(process.cwd(), "browser-extension", "fanqie-delivery");
+    const content = fs.readFileSync(path.join(extensionDirectory, "content.js"), "utf8");
+    const background = fs.readFileSync(path.join(extensionDirectory, "background.js"), "utf8");
+    expect(content).toContain("#dropmind-auto");
+    expect(content).toContain("continueAutomaticDelivery");
+    expect(content).toContain('type: "begin-auto-run"');
+    expect(background).toContain('message.type === "get-auto-run"');
+    expect(background).toContain('message.type === "update-auto-run"');
   });
 
   it("uses the confirmed automatic publishing choices", () => {

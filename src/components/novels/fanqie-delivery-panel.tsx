@@ -29,6 +29,12 @@ function tomorrowDate() {
   return `${year}-${month}-${day}`;
 }
 
+function automaticDeliveryUrl(value: string, jobId: string) {
+  const url = new URL(value);
+  url.hash = `dropmind-auto=${encodeURIComponent(jobId)}`;
+  return url.toString();
+}
+
 export function FanqieDeliveryPanel({ mode, novelId, novelName, chapterNumber, chapterTitle, chapterContent, chapterDirty, initialState, extensionDirectory }: {
   mode: "setup" | "chapter";
   novelId: string;
@@ -100,8 +106,8 @@ export function FanqieDeliveryPanel({ mode, novelId, novelName, chapterNumber, c
   }
 
   if (mode === "setup") return <section className="fanqie-delivery-panel delivery-setup-panel">
-    <div className="panel-title"><div><p className="novel-kicker">第一版 · 人工确认发布</p><h3>番茄作品投递</h3></div><span className={`delivery-status ${state.target ? "ready" : "cancelled"}`}>{state.target ? "已绑定" : "未绑定"}</span></div>
-    <p className="delivery-explanation">DropMind 生成单章投递队列，Chrome 扩展负责把标题和正文填入番茄后台，最终提交按钮仍由你确认。</p>
+    <div className="panel-title"><div><p className="novel-kicker">Chrome 扩展 · 单章自动投递</p><h3>番茄作品投递</h3></div><span className={`delivery-status ${state.target ? "ready" : "cancelled"}`}>{state.target ? "已绑定" : "未绑定"}</span></div>
+    <p className="delivery-explanation">DropMind 生成单章投递任务；从正文章节页打开番茄后台后，扩展会自动填入、检测并按所选日期定时发布。</p>
     <div className="delivery-target-form">
       <label>番茄作品名<input value={bookName} maxLength={100} onChange={(event) => setBookName(event.target.value)} placeholder="必须与番茄后台作品名一致" /></label>
       <label>作品管理页<input value={manageUrl} onChange={(event) => setManageUrl(event.target.value)} placeholder="https://fanqienovel.com/main/writer/book-manage" /></label>
@@ -112,12 +118,13 @@ export function FanqieDeliveryPanel({ mode, novelId, novelName, chapterNumber, c
   </section>;
 
   const canQueue = Boolean(state.target && chapterTitle.trim() && chapterContent.trim() && !chapterDirty && publishDate >= earliestPublishDate && currentJob?.status !== "submitted");
+  const canStartAutomatically = Boolean(currentJob && ["ready", "claimed", "filled"].includes(currentJob.status));
   return <section className="fanqie-delivery-panel chapter-delivery-panel">
     <div className="panel-title"><div><p className="novel-kicker">番茄单章投递</p><h3>第 {chapterNumber} 章《{chapterTitle || "未命名"}》</h3></div>{currentJob && <span className={`delivery-status ${currentJob.status}`}>{statusLabels[currentJob.status]}</span>}</div>
     {!state.target ? <p className="delivery-warning">尚未绑定番茄作品，请先到第6步“发布准备”完成绑定和扩展连接。</p> : <p className="delivery-explanation">目标作品：{state.target.bookName}。队列保存的是当前正式版本；本地未保存修改不会被投递。</p>}
     {currentJob?.lastError && <p className="delivery-warning">{currentJob.lastError}</p>}
     <div className="delivery-schedule"><label>发布日期<input type="date" min={earliestPublishDate} value={publishDate} disabled={scheduleLocked} onChange={(event) => setPublishDate(event.target.value)} /></label><span><strong>12:00</strong> 固定发布</span>{scheduleLocked && <small>扩展已领取后不能修改日期</small>}</div>
-    <div className="delivery-actions"><button type="button" disabled={!canQueue || busy === "queue"} onClick={() => void queue()}>{busy === "queue" ? "加入中…" : currentJob && ["failed", "stale", "cancelled"].includes(currentJob.status) ? "重新加入队列" : currentJob ? "更新投递任务" : "投递到番茄"}</button>{state.target && <a className="button-link" href={state.target.manageUrl} target="_blank" rel="noreferrer">打开番茄后台</a>}<button type="button" className="button-secondary" disabled={busy === "refresh"} onClick={() => void refresh()}>{busy === "refresh" ? "刷新中…" : "刷新投递状态"}</button>{currentJob && !["submitted", "cancelled"].includes(currentJob.status) && <button type="button" className="button-quiet" disabled={busy === "cancel"} onClick={() => void cancel()}>取消任务</button>}</div>
+    <div className="delivery-actions"><button type="button" disabled={!canQueue || busy === "queue"} onClick={() => void queue()}>{busy === "queue" ? "加入中…" : currentJob && ["failed", "stale", "cancelled"].includes(currentJob.status) ? "重新加入队列" : currentJob ? "更新投递任务" : "投递到番茄"}</button>{state.target && <a className="button-link" href={canStartAutomatically && currentJob ? automaticDeliveryUrl(state.target.manageUrl, currentJob.id) : state.target.manageUrl} target="_blank" rel="noreferrer">{canStartAutomatically ? "打开后台并自动投递" : "打开番茄后台"}</a>}<button type="button" className="button-secondary" disabled={busy === "refresh"} onClick={() => void refresh()}>{busy === "refresh" ? "刷新中…" : "刷新投递状态"}</button>{currentJob && !["submitted", "cancelled"].includes(currentJob.status) && <button type="button" className="button-quiet" disabled={busy === "cancel"} onClick={() => void cancel()}>取消任务</button>}</div>
     {!scheduleLocked && publishDate < earliestPublishDate && <p className="delivery-warning">发布日期至少选择明天。</p>}
     {scheduleLocked && !publishDate && currentJob?.status !== "submitted" && <p className="delivery-warning">这是升级前领取的任务，没有发布日期；请取消后重新选择日期加入队列。</p>}
     {chapterDirty && <p className="delivery-warning">当前标题或正文尚未保存，保存后才能投递。</p>}

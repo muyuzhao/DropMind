@@ -12,7 +12,7 @@
     if (!(element instanceof HTMLElement)) return false;
     const style = getComputedStyle(element);
     const rect = element.getBoundingClientRect();
-    return style.display !== "none" && style.visibility !== "hidden" && rect.width > 20 && rect.height > 14;
+    return style.display !== "none" && style.visibility !== "hidden" && rect.width > 4 && rect.height > 4;
   }
 
   function validPublishDate(value) {
@@ -28,10 +28,16 @@
   }
 
   function findButton(root, label) {
-    const candidates = [...root.querySelectorAll("button,[role='button']")].filter(visible);
-    return candidates.find((element) => normalize(element.textContent) === normalize(label))
-      || candidates.find((element) => normalize(element.textContent).includes(normalize(label)))
-      || null;
+    const candidates = [...root.querySelectorAll("button,[role='button'],a,[tabindex]")].filter(visible);
+    const direct = candidates.find((element) => normalize(element.textContent) === normalize(label))
+      || candidates.find((element) => normalize(element.textContent).includes(normalize(label)));
+    if (direct) return direct;
+    const leaf = findLeafByText(root, label);
+    let current = leaf;
+    for (let depth = 0; current && depth < 4; depth += 1, current = current.parentElement) {
+      if (current.matches("button,[role='button'],a,[tabindex]") || getComputedStyle(current).cursor === "pointer") return current;
+    }
+    return leaf;
   }
 
   function findDialog(text) {
@@ -74,26 +80,43 @@
   }
 
   function findLeafByText(root, label) {
-    return [...root.querySelectorAll("label,span,div")]
+    return [...root.querySelectorAll("label,span,p,div")]
       .filter(visible)
       .filter((element) => normalize(element.textContent) === normalize(label))
       .sort((left, right) => area(left) - area(right))[0] || null;
   }
 
-  async function chooseAiNo(dialog) {
-    const aiText = findLeafByText(dialog, "是否使用AI");
-    if (!aiText) throw new Error("没有识别到“是否使用AI”设置");
-    let row = aiText.parentElement;
-    for (let depth = 0; row && depth < 4; depth += 1, row = row.parentElement) {
-      const noLabel = findLeafByText(row, PUBLISH_PLAN.aiOption);
-      if (!noLabel) continue;
-      const input = noLabel.matches("label") ? noLabel.querySelector("input[type='radio']") : noLabel.closest("label")?.querySelector("input[type='radio']");
-      (input || noLabel).click();
-      await new Promise((resolve) => setTimeout(resolve, 120));
-      if (input && !input.checked) throw new Error("“是否使用AI”未能切换为“否”");
-      return;
+  function findSmallestContainingText(root, label) {
+    return [...root.querySelectorAll("label,span,p,div")]
+      .filter(visible)
+      .filter((element) => normalize(element.textContent).includes(normalize(label)))
+      .sort((left, right) => area(left) - area(right))[0] || null;
+  }
+
+  function clickableChoice(element, root) {
+    let current = element;
+    for (let depth = 0; current && current !== root && depth < 4; depth += 1, current = current.parentElement) {
+      if (current.matches("label,[role='radio'],button,[role='button']") || getComputedStyle(current).cursor === "pointer") return current;
     }
-    throw new Error("没有识别到“是否使用AI”的“否”选项");
+    return element;
+  }
+
+  async function chooseAiNo(dialog) {
+    const aiText = findSmallestContainingText(dialog, "是否使用AI");
+    if (!aiText) throw new Error("没有识别到“是否使用AI”设置");
+    const radioLabels = [...dialog.querySelectorAll("label")].filter(visible).filter((element) => normalize(element.textContent) === PUBLISH_PLAN.aiOption);
+    const noLabel = radioLabels.sort((left, right) => area(left) - area(right))[0] || findLeafByText(dialog, PUBLISH_PLAN.aiOption);
+    if (!noLabel) throw new Error("没有识别到“是否使用AI”的“否”选项");
+    const choice = clickableChoice(noLabel, dialog);
+    const associatedId = choice.getAttribute("for") || noLabel.getAttribute("for");
+    const input = choice.querySelector?.("input[type='radio']")
+      || (associatedId ? dialog.querySelector(`#${CSS.escape(associatedId)}`) : null)
+      || noLabel.closest("label")?.querySelector("input[type='radio']");
+    choice.click();
+    if (input && !input.checked) input.click();
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    if (input && !input.checked) throw new Error("“是否使用AI”未能切换为“否”");
+    if (choice.getAttribute("role") === "radio" && choice.getAttribute("aria-checked") !== "true") throw new Error("“是否使用AI”未能切换为“否”");
   }
 
   function findScheduleInput(dialog, kind) {
@@ -116,17 +139,29 @@
   async function ensureScheduleEnabled(dialog) {
     const currentDateInput = findScheduleInput(dialog, "date");
     if (currentDateInput && !currentDateInput.disabled) return;
-    const label = findLeafByText(dialog, "定时发布");
+    const label = findSmallestContainingText(dialog, "定时发布");
     if (!label) throw new Error("没有识别到“定时发布”开关");
+    const labelRect = label.getBoundingClientRect();
     let row = label.parentElement;
     for (let depth = 0; row && depth < 4; depth += 1, row = row.parentElement) {
-      const control = row.querySelector("input[type='checkbox'],[role='switch'],[class*='switch']");
+      const semanticControls = [...row.querySelectorAll("input[type='checkbox'],[role='switch'],[class*='switch']")]
+        .filter(visible)
+        .sort((left, right) => area(left) - area(right));
+      const nearbyButtons = [...row.querySelectorAll("button,[role='button']")]
+        .filter(visible)
+        .filter((element) => {
+          const rect = element.getBoundingClientRect();
+          const verticalDistance = Math.abs((rect.top + rect.bottom) / 2 - (labelRect.top + labelRect.bottom) / 2);
+          return rect.left >= labelRect.right - 8 && rect.width <= 100 && rect.height <= 60 && verticalDistance <= 35;
+        })
+        .sort((left, right) => area(left) - area(right));
+      const control = semanticControls[0] || nearbyButtons[0];
       if (!control) continue;
       control.click();
       await waitFor(() => {
         const dateInput = findScheduleInput(dialog, "date");
         return dateInput && !dateInput.disabled ? dateInput : null;
-      }, "启用定时发布", 5000);
+      }, "启用定时发布", 8000);
       return;
     }
     throw new Error("无法确认定时发布开关状态");
@@ -151,23 +186,27 @@
     return location.href !== previousUrl && !findDialog("发布设置");
   }
 
-  async function runPublishFlow({ publishDate, onProgress = () => {} }) {
+  function findPublishStage() {
+    const typo = findDialog("检测到你还有错别字未修改");
+    if (typo) return { kind: "typo", dialog: typo };
+    const detection = findDialog("请选择内容检测方式");
+    if (detection) return { kind: "detection", dialog: detection };
+    const settings = findDialog("发布设置");
+    if (settings) return { kind: "settings", dialog: settings };
+    return null;
+  }
+
+  async function runPublishFlow({ publishDate, onProgress = () => {}, onBeforeConfirm = async () => {} }) {
     if (!validPublishDate(publishDate)) throw new Error("投递任务没有有效的发布日期，请回工作台重新加入队列");
-    onProgress("正在进入发布检查…");
-    const nextButton = await waitFor(() => findButton(document, "下一步"), "“下一步”按钮");
-    nextButton.click();
+    if (!findPublishStage()) {
+      onProgress("正在进入发布检查…");
+      const nextButton = await waitFor(() => findButton(document, "下一步"), "“下一步”按钮");
+      nextButton.click();
+    }
 
     let settingsDialog = null;
     for (let step = 0; step < 4 && !settingsDialog; step += 1) {
-      const stage = await waitFor(() => {
-        const typo = findDialog("检测到你还有错别字未修改");
-        if (typo) return { kind: "typo", dialog: typo };
-        const detection = findDialog("请选择内容检测方式");
-        if (detection) return { kind: "detection", dialog: detection };
-        const settings = findDialog("发布设置");
-        if (settings) return { kind: "settings", dialog: settings };
-        return null;
-      }, "发布检查弹窗");
+      const stage = await waitFor(findPublishStage, "发布检查弹窗");
       if (stage.kind === "settings") { settingsDialog = stage.dialog; break; }
       if (stage.kind === "typo") {
         onProgress("检测到错别字提示，正在选择继续提交…");
@@ -190,11 +229,12 @@
     const confirm = findButton(settingsDialog, "确认发布");
     if (!confirm) throw new Error("没有识别到“确认发布”按钮");
     const previousUrl = location.href;
+    await onBeforeConfirm({ previousUrl });
     confirm.click();
     onProgress("已确认发布，正在等待番茄返回结果…");
     await waitFor(() => publishSucceeded(previousUrl), "发布成功结果", 30000);
     return { submitted: true };
   }
 
-  globalThis.DropMindFanqiePublisher = { PUBLISH_PLAN, validPublishDate, runPublishFlow };
+  globalThis.DropMindFanqiePublisher = { PUBLISH_PLAN, validPublishDate, publishSucceeded, runPublishFlow };
 })();

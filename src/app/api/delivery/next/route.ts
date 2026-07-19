@@ -16,7 +16,8 @@ export async function OPTIONS() {
 
 export async function GET(request: Request) {
   try {
-    const job = deliveryRepository.claimNext(request.headers.get("x-dropmind-token") ?? "");
+    const jobId = new URL(request.url).searchParams.get("jobId")?.trim() || undefined;
+    const job = deliveryRepository.claimNext(request.headers.get("x-dropmind-token") ?? "", jobId);
     return Response.json({ ok: true, job }, { headers: corsHeaders });
   } catch (error) {
     const message = error instanceof Error ? error.message : "领取投递任务失败";

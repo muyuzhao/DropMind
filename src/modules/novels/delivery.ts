@@ -161,21 +161,25 @@ export function createDeliveryRepository(sqlite: Database.Database) {
       return getJobs(novelId).find((job) => job.id === jobId)!;
     },
 
-    claimNext(token: string): ClaimedDeliveryJob | null {
+    claimNext(token: string, requestedJobId?: string): ClaimedDeliveryJob | null {
       assertToken(token);
       return sqlite.transaction(() => {
         const timestamp = now();
         sqlite.prepare("update delivery_jobs set status='ready',claimed_at=null,updated_at=? where status='claimed' and claimed_at<?")
           .run(timestamp, timestamp - CLAIM_TIMEOUT_MS);
-        const ready = sqlite.prepare("select * from delivery_jobs where status='ready' order by created_at limit 100").all() as Row[];
-        for (const row of ready) {
+        const candidates = requestedJobId
+          ? sqlite.prepare("select * from delivery_jobs where id=? and status in ('ready','claimed','filled')").all(requestedJobId) as Row[]
+          : sqlite.prepare("select * from delivery_jobs where status='ready' order by created_at limit 100").all() as Row[];
+        for (const row of candidates) {
           const chapter = sqlite.prepare("select title,content from chapters where novel_id=? and chapter_number=?").get(row.novel_id, row.chapter_number) as { title: string; content: string } | undefined;
           if (!chapter || contentHash(chapter.title, chapter.content) !== String(row.content_hash)) {
             sqlite.prepare("update delivery_jobs set status='stale',last_error=?,updated_at=? where id=?").run("工作台中的章节已修改，请重新加入投递队列", timestamp, row.id);
             continue;
           }
-          const claimed = sqlite.prepare("update delivery_jobs set status='claimed',claimed_at=?,last_error='',updated_at=? where id=? and status='ready'").run(timestamp, timestamp, row.id);
-          if (!claimed.changes) continue;
+          if (String(row.status) === "ready") {
+            const claimed = sqlite.prepare("update delivery_jobs set status='claimed',claimed_at=?,last_error='',updated_at=? where id=? and status='ready'").run(timestamp, timestamp, row.id);
+            if (!claimed.changes) continue;
+          }
           const full = sqlite.prepare(`select j.*,length(j.chapter_content) content_length,n.name novel_name
             from delivery_jobs j join novels n on n.id=j.novel_id where j.id=?`).get(row.id) as Row;
           return { ...jobFromRow(full), novelName: String(full.novel_name), chapterContent: String(full.chapter_content) };
