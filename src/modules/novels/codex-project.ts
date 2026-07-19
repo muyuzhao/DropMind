@@ -5,6 +5,7 @@ import { rangeForChapter } from "./ranges";
 import { buildCoverPrompt } from "./prompts";
 import type { NovelWorkspaceData } from "./types";
 import { parseSelectedTopic } from "./selected-topic";
+import { chapterFileName, normalizeChapterTitle, parseChapterFileName } from "./chapter-title";
 
 type ProjectOptions = { rootDir?: string };
 export type CodexChapterPhase = "not_initialized" | "synced" | "task_ready" | "file_ready" | "imported";
@@ -38,6 +39,34 @@ function safeFolderName(value: string) {
 
 function chapterLabel(chapter: number) {
   return String(chapter).padStart(3, "0");
+}
+
+function chapterDirectory(projectDir: string) {
+  return path.join(projectDir, "正文");
+}
+
+function chapterFileCandidates(projectDir: string, chapterNumber: number) {
+  const directory = chapterDirectory(projectDir);
+  if (!fs.existsSync(directory)) return [];
+  return fs.readdirSync(directory, { withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => ({ entry, parsed: parseChapterFileName(entry.name) }))
+    .filter((item): item is { entry: fs.Dirent; parsed: NonNullable<ReturnType<typeof parseChapterFileName>> } => item.parsed?.chapterNumber === chapterNumber)
+    .map((item) => ({ filePath: path.join(directory, item.entry.name), title: item.parsed.title }))
+    .sort((left, right) => fs.statSync(right.filePath).mtimeMs - fs.statSync(left.filePath).mtimeMs);
+}
+
+function findChapterFile(projectDir: string, chapterNumber: number, expectedTitle = "") {
+  const normalizedTitle = normalizeChapterTitle(expectedTitle);
+  const desiredPath = path.join(chapterDirectory(projectDir), chapterFileName(chapterNumber, normalizedTitle));
+  if (fs.existsSync(desiredPath)) return { filePath: desiredPath, title: normalizedTitle };
+  const candidates = chapterFileCandidates(projectDir, chapterNumber);
+  if (!candidates.length) return null;
+  if (normalizedTitle) {
+    const matching = candidates.find((candidate) => candidate.title === normalizedTitle);
+    if (matching) return matching;
+  }
+  return candidates[0];
 }
 
 function rangeLabel(start: number, end: number) {
@@ -183,9 +212,18 @@ export function syncNovelCodexProject(workspace: NovelWorkspaceData, options: Pr
   }
   for (const row of workspace.chapters) {
     const chapterNumber = Number(row.chapterNumber);
+    const title = normalizeChapterTitle(String(row.title ?? ""));
     const content = String(row.content ?? "").trim();
-    const filePath = path.join(projectDir, "正文", `第${chapterLabel(chapterNumber)}章.md`);
-    if (content && !fs.existsSync(filePath)) writeText(filePath, content);
+    if (!content) continue;
+    const desiredPath = path.join(chapterDirectory(projectDir), chapterFileName(chapterNumber, title));
+    if (fs.existsSync(desiredPath)) continue;
+    const candidates = chapterFileCandidates(projectDir, chapterNumber);
+    const matchingContent = candidates.filter((candidate) => fs.readFileSync(candidate.filePath, "utf8").trim() === content);
+    if (title && matchingContent.length === 1) {
+      fs.renameSync(matchingContent[0].filePath, desiredPath);
+      continue;
+    }
+    if (!candidates.length) writeText(desiredPath, content);
   }
   return { ...info, exists: true };
 }
@@ -217,11 +255,12 @@ export function inspectCodexChapterState(workspace: NovelWorkspaceData, chapterN
   const taskText = fs.existsSync(taskPath) ? fs.readFileSync(taskPath, "utf8") : "";
   const taskMatch = taskText.match(/^# 当前任务：创作第(\d+)章正文/m);
   const taskChapter = taskMatch ? Number(taskMatch[1]) : null;
-  const filePath = path.join(info.projectDir, "正文", `第${chapterLabel(chapterNumber)}章.md`);
-  const fileExists = fs.existsSync(filePath) && fs.statSync(filePath).size > 0;
-  const fileModifiedAt = fileExists ? fs.statSync(filePath).mtimeMs : null;
-  const fileContent = fileExists ? fs.readFileSync(filePath, "utf8").trim() : "";
-  const databaseContent = String(workspace.chapters.find((row) => Number(row.chapterNumber) === chapterNumber)?.content ?? "").trim();
+  const databaseChapter = workspace.chapters.find((row) => Number(row.chapterNumber) === chapterNumber);
+  const chapterFile = findChapterFile(info.projectDir, chapterNumber, String(databaseChapter?.title ?? ""));
+  const fileExists = Boolean(chapterFile && fs.statSync(chapterFile.filePath).size > 0);
+  const fileModifiedAt = fileExists && chapterFile ? fs.statSync(chapterFile.filePath).mtimeMs : null;
+  const fileContent = fileExists && chapterFile ? fs.readFileSync(chapterFile.filePath, "utf8").trim() : "";
+  const databaseContent = String(databaseChapter?.content ?? "").trim();
 
   let phase: CodexChapterPhase = "synced";
   if (fileExists && databaseContent && fileContent === databaseContent) phase = "imported";
@@ -233,8 +272,15 @@ export function inspectCodexChapterState(workspace: NovelWorkspaceData, chapterN
 export function prepareCodexChapterTask(workspace: NovelWorkspaceData, chapterNumber: number, options: ProjectOptions = {}) {
   const range = requiredTaskContent(workspace, chapterNumber);
   const info = syncNovelCodexProject(workspace, options);
-  const previous = chapterNumber > 1 ? `- 正文/第${chapterLabel(chapterNumber - 1)}章.md` : "- 本章为第一章，无上一章正文";
-  const task = `# 当前任务：创作第${chapterNumber}章正文\n\n## 请按顺序读取\n\n- 资料/正文创作要求.md\n- 资料/核心设定.md\n- 资料/分卷大纲.md\n- 资料/本卷大纲.md\n- 资料/剧情单元/第${rangeLabel(range.start, range.end)}章.md\n- 资料/分章大纲/第${rangeLabel(range.start, range.end)}章.md\n${previous}\n\n## 本次任务\n\n1. 从分章大纲中定位第${chapterNumber}章，只创作这一章。\n2. 联系前文，确保人物、时间、地点、信息差和情绪变化连贯。\n3. 正文不要带章节标题，不写解释、总结或下一章内容。\n4. 将最终正文保存到：正文/第${chapterLabel(chapterNumber)}章.md\n5. 写到本章大纲的结尾钩子立即停止。\n`;
+  const previousChapter = chapterNumber > 1 ? workspace.chapters.find((row) => Number(row.chapterNumber) === chapterNumber - 1) : null;
+  const previousFile = previousChapter ? findChapterFile(info.projectDir, chapterNumber - 1, String(previousChapter.title ?? "")) : null;
+  const previous = previousFile ? `- 正文/${path.basename(previousFile.filePath)}` : "- 本章为第一章，无上一章正文";
+  const currentTitle = normalizeChapterTitle(String(workspace.chapters.find((row) => Number(row.chapterNumber) === chapterNumber)?.title ?? ""));
+  const titleInstruction = currentTitle
+    ? `沿用已经确认的章节标题“${currentTitle}”，不要另拟标题。`
+    : "根据本章正文拟定一个准确、有吸引力且不剧透核心反转的章节标题，不包含“第X章”前缀，最多60个字符。";
+  const outputFile = currentTitle ? chapterFileName(chapterNumber, currentTitle) : `第${chapterLabel(chapterNumber)}章__<章节标题>.md`;
+  const task = `# 当前任务：创作第${chapterNumber}章正文\n\n## 请按顺序读取\n\n- 资料/正文创作要求.md\n- 资料/核心设定.md\n- 资料/分卷大纲.md\n- 资料/本卷大纲.md\n- 资料/剧情单元/第${rangeLabel(range.start, range.end)}章.md\n- 资料/分章大纲/第${rangeLabel(range.start, range.end)}章.md\n${previous}\n\n## 本次任务\n\n1. 从分章大纲中定位第${chapterNumber}章，只创作这一章。\n2. 联系前文，确保人物、时间、地点、信息差和情绪变化连贯。\n3. ${titleInstruction}\n4. 正文不要带章节标题，不写解释、总结或下一章内容。\n5. 将最终纯正文保存到：正文/${outputFile}；文件名标题不得包含 < > : \" / \\ | ? *。\n6. 写到本章大纲的结尾钩子立即停止。\n`;
   const taskPath = path.join(info.projectDir, "当前任务.md");
   writeText(taskPath, task);
   return { ...info, taskPath, command: "执行当前任务" };
@@ -242,16 +288,19 @@ export function prepareCodexChapterTask(workspace: NovelWorkspaceData, chapterNu
 
 export function writeCodexChapter(workspace: NovelWorkspaceData, chapterNumber: number, content: string, options: ProjectOptions = {}) {
   const info = syncNovelCodexProject(workspace, options);
-  const filePath = path.join(info.projectDir, "正文", `第${chapterLabel(chapterNumber)}章.md`);
+  const chapter = workspace.chapters.find((row) => Number(row.chapterNumber) === chapterNumber);
+  const filePath = path.join(info.projectDir, "正文", chapterFileName(chapterNumber, String(chapter?.title ?? "")));
   writeText(filePath, content.trim());
   return { ...info, filePath };
 }
 
 export function readCodexChapter(workspace: NovelWorkspaceData, chapterNumber: number, options: ProjectOptions = {}) {
   const info = getNovelCodexProjectInfo(workspace, options);
-  const filePath = path.join(info.projectDir, "正文", `第${chapterLabel(chapterNumber)}章.md`);
-  if (!fs.existsSync(filePath)) throw new Error(`还没有找到本地正文：${filePath}`);
+  const chapter = workspace.chapters.find((row) => Number(row.chapterNumber) === chapterNumber);
+  const result = findChapterFile(info.projectDir, chapterNumber, String(chapter?.title ?? ""));
+  if (!result) throw new Error(`还没有找到本地正文：${path.join(info.projectDir, "正文", `第${chapterLabel(chapterNumber)}章__<章节标题>.md`)}`);
+  const { filePath } = result;
   const content = fs.readFileSync(filePath, "utf8").trim();
   if (!content) throw new Error(`本地正文文件为空：${filePath}`);
-  return { ...info, filePath, content };
+  return { ...info, filePath, title: normalizeChapterTitle(result.title || String(chapter?.title ?? "")), content };
 }

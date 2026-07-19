@@ -309,6 +309,8 @@ button.button-quiet:hover { text-decoration: underline; }
 .editor-meta .save-status.dirty,.editor-meta .save-status.error { color: #a63d2c; background: #f7e7e1; }
 .editor-meta .save-status.saving { color: #8a6715; background: #f5eed9; }
 .editor-meta .save-status.saved { color: var(--green); background: #e7efe9; }
+.chapter-title-field { display: grid; gap: 7px; margin-bottom: 12px; color: var(--muted); font-size: 12px; font-weight: 700; }
+.chapter-title-field input { width: 100%; border: 1px solid var(--line); padding: 11px 13px; background: white; color: var(--ink); font: 15px "Microsoft YaHei", sans-serif; }
 .editor-toolbar { position: sticky; bottom: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 48px; margin-top: 10px; padding: 8px 0; background: linear-gradient(to bottom, rgba(249,247,241,.88), var(--paper) 32%); }
 .editor-toolbar > div { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-left: auto; flex-wrap: wrap; }
 .editor-toolbar .publish-toggle { color: #68448d; border-color: #bda9d0; }

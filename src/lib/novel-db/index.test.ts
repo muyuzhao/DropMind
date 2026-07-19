@@ -33,6 +33,44 @@ describe("initializeNovelDatabase", () => {
       .toMatchObject({ current_range_start: 1, current_chapter: 1 });
   });
 
+  it("backs up existing data before adding chapter titles", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "dropmind-title-migration-"));
+    const databasePath = path.join(directory, "novels.db");
+    const sqlite = new Database(databasePath);
+    try {
+      sqlite.exec(`
+        create table novels (
+          id TEXT PRIMARY KEY, name TEXT NOT NULL, reference_title TEXT NOT NULL, reference_summary TEXT NOT NULL,
+          selected_topic TEXT NOT NULL DEFAULT '', first_volume_outline TEXT NOT NULL DEFAULT '',
+          current_step TEXT NOT NULL DEFAULT 'topics', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+        );
+        create table chapters (
+          id TEXT PRIMARY KEY, novel_id TEXT NOT NULL, chapter_number INTEGER NOT NULL,
+          content TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'not_started', is_draft INTEGER NOT NULL DEFAULT 1,
+          created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, UNIQUE(novel_id, chapter_number)
+        );
+      `);
+      sqlite.prepare("insert into novels (id,name,reference_title,reference_summary,created_at,updated_at) values (?,?,?,?,?,?)")
+        .run("novel-1", "旧小说", "参考", "简介", 1, 1);
+      sqlite.prepare("insert into chapters (id,novel_id,chapter_number,content,status,is_draft,created_at,updated_at) values (?,?,?,?,?,?,?,?)")
+        .run("chapter-1", "novel-1", 1, "迁移前正文", "saved", 0, 1, 1);
+
+      initializeNovelDatabase(sqlite);
+
+      expect(sqlite.prepare("select title,content from chapters where id=?").get("chapter-1"))
+        .toMatchObject({ title: "", content: "迁移前正文" });
+      const backups = fs.readdirSync(path.join(directory, "backups"));
+      expect(backups).toHaveLength(1);
+      const backup = new Database(path.join(directory, "backups", backups[0]), { readonly: true });
+      expect(backup.prepare("select content from chapters where id=?").get("chapter-1"))
+        .toMatchObject({ content: "迁移前正文" });
+      backup.close();
+    } finally {
+      sqlite.close();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("clears incompatible step 4 and 5 content only once", () => {
     const sqlite = new Database(":memory:");
     initializeNovelDatabase(sqlite);

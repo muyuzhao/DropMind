@@ -47,7 +47,7 @@ describe("chapter automation", () => {
     for (const node of manifest.nodes) {
       node.status = "completed";
       node.attempts = 1;
-      fs.writeFileSync(path.join(runDir, node.outputPath), content[node.chapterNumber], "utf8");
+      fs.writeFileSync(path.join(runDir, node.outputPath), `<!-- DROPMIND_TITLE: 自动标题${node.chapterNumber} -->\n${content[node.chapterNumber]}`, "utf8");
     }
     fs.writeFileSync(path.join(runDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
     return manifest;
@@ -72,7 +72,7 @@ describe("chapter automation", () => {
     const result = createChapterAutomationRun(repo.getNovelWorkspace(novelId)!, { startChapter: 1, chapterCount: 1 }, { rootDir });
     requestChapterAutomationControl(result.runDir, "run", { mode: "retry-node", targetNodeId: "chapter-1" });
     const fakeCli = path.join(rootDir, "fake-chapter-codex.cmd");
-    fs.writeFileSync(fakeCli, `@echo off\r\nchcp 65001 >nul\r\nset out=\r\n:args\r\nif "%~1"=="" goto ready\r\nif "%~1"=="--output-last-message" set out=%~2\r\nshift\r\ngoto args\r\n:ready\r\n>"%out%" echo 这是自动生成的第一章正文。\r\n>>"%out%" echo ^<!-- DROPMIND_CONTINUITY --^>\r\n>>"%out%" echo 下一章必须延续：第一章结尾事实\r\nexit /b 0\r\n`, "utf8");
+    fs.writeFileSync(fakeCli, `@echo off\r\nchcp 65001 >nul\r\nset out=\r\n:args\r\nif "%~1"=="" goto ready\r\nif "%~1"=="--output-last-message" set out=%~2\r\nshift\r\ngoto args\r\n:ready\r\n>"%out%" echo ^<!-- DROPMIND_TITLE: 第一章标题 --^>\r\n>>"%out%" echo 这是自动生成的第一章正文。\r\n>>"%out%" echo ^<!-- DROPMIND_CONTINUITY --^>\r\n>>"%out%" echo 下一章必须延续：第一章结尾事实\r\nexit /b 0\r\n`, "utf8");
 
     const executed = spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(result.runDir, "run-pipeline.ps1")], {
       cwd: result.runDir,
@@ -108,6 +108,7 @@ describe("chapter automation", () => {
     const refreshed = repo.getNovelWorkspace(novelId)!;
     expect(refreshed.chapters.find((row) => Number(row.chapterNumber) === 1)?.content).toBe("自动生成第一章");
     expect(refreshed.chapters.find((row) => Number(row.chapterNumber) === 2)?.content).toBe("自动生成第二章");
+    expect(refreshed.chapters.find((row) => Number(row.chapterNumber) === 1)?.title).toBe("自动标题1");
     expect(refreshed.contentVersions.some((row) => row.contentType === "chapter" && row.contentKey === "1" && row.content === "旧第一章")).toBe(true);
     expect(importCompletedChapterAutomationRun(result.runDir, readChapterAutomationManifest(result.runDir), refreshed, repo).importedCount).toBe(0);
   });

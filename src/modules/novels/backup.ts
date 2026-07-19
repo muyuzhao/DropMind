@@ -33,7 +33,7 @@ const backupWorkspaceSchema = z.object({
   steps: z.array(z.object({ key: z.enum(stepKeyValues), content: z.string(), isDraft: draftFlag.default(false) }).passthrough()),
   storyUnits: z.array(z.object({ startChapter: batchStart, endChapter: chapterNumber, content: z.string(), isDraft: draftFlag.default(false) }).passthrough()),
   chapterOutlines: z.array(z.object({ chapterNumber, content: z.string(), isDraft: draftFlag.default(false) }).passthrough()),
-  chapters: z.array(z.object({ chapterNumber, content: z.string(), status: z.enum(chapterStatusValues), isDraft: draftFlag.default(false) }).passthrough()),
+  chapters: z.array(z.object({ chapterNumber, title: z.string().default(""), content: z.string(), status: z.enum(chapterStatusValues), isDraft: draftFlag.default(false) }).passthrough()),
   contentVersions: z.array(z.object({
     contentType: z.enum(["step", "novel_field", "story_unit", "outline_batch", "chapter", "template"]),
     contentKey: z.string(), content: z.string(), createdAt: z.number().int(),
@@ -78,10 +78,10 @@ export function parseNovelBackup(json: string) {
   }
 }
 
-export function exportVolumeText(chapters: Array<{ chapterNumber: number; content: string }>) {
+export function exportVolumeText(chapters: Array<{ chapterNumber: number; title?: string; content: string }>) {
   return chapters
     .filter((chapter) => chapter.content.trim())
     .sort((a, b) => a.chapterNumber - b.chapterNumber)
-    .map((chapter) => `第${chapter.chapterNumber}章\n\n${chapter.content.trim()}`)
+    .map((chapter) => `第${chapter.chapterNumber}章${chapter.title?.trim() ? ` ${chapter.title.trim()}` : ""}\n\n${chapter.content.trim()}`)
     .join("\n\n\n");
 }

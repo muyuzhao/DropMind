@@ -33,7 +33,7 @@ describe("Codex novel project files", () => {
     repo.saveStep(novel.id, "tags", "主分类：古言脑洞\n主题：古代言情\n角色：王妃\n情节：先婚后爱", false);
     repo.saveStoryUnit(novel.id, 1, "第1-10章剧情单元", false);
     repo.saveChapterOutline(novel.id, 2, "第1-10章详细分章大纲，包含第2章", false);
-    repo.saveChapter(novel.id, 1, "第一章正文", "saved", false);
+    repo.saveChapter(novel.id, 1, "第一章正文", "saved", false, "初入王府");
     return repo.getNovelWorkspace(novel.id)!;
   }
 
@@ -51,8 +51,8 @@ describe("Codex novel project files", () => {
     expect(fs.readFileSync(path.join(result.projectDir, "资料", "作品标签.md"), "utf8")).toContain("主分类：古言脑洞");
     expect(fs.readFileSync(path.join(result.projectDir, "资料", "封面提示词.md"), "utf8")).toContain("【书名】\n古言：测试/项目");
     expect(fs.readFileSync(path.join(result.projectDir, "资料", "剧情单元", "第001-010章.md"), "utf8")).toContain("第1-10章剧情单元");
-    expect(fs.readFileSync(result.taskPath, "utf8")).toContain("正文/第001章.md");
-    expect(fs.readFileSync(result.taskPath, "utf8")).toContain("正文/第002章.md");
+    expect(fs.readFileSync(result.taskPath, "utf8")).toContain("正文/第001章__初入王府.md");
+    expect(fs.readFileSync(result.taskPath, "utf8")).toContain("正文/第002章__<章节标题>.md");
     expect(result.command).toBe("执行当前任务");
     expect(inspectCodexChapterState(workspace, 2, { rootDir })).toMatchObject({ phase: "task_ready", taskChapter: 2, fileExists: false });
   });
@@ -60,7 +60,7 @@ describe("Codex novel project files", () => {
   it("preserves a Codex-written body during material sync and supports explicit import/export", () => {
     const workspace = completeWorkspace();
     const info = syncNovelCodexProject(workspace, { rootDir });
-    const bodyPath = path.join(info.projectDir, "正文", "第001章.md");
+    const bodyPath = path.join(info.projectDir, "正文", "第001章__初入王府.md");
     fs.writeFileSync(bodyPath, "Codex新正文", "utf8");
 
     syncNovelCodexProject(workspace, { rootDir });
@@ -72,6 +72,31 @@ describe("Codex novel project files", () => {
     writeCodexChapter(refreshed, 1, "工作台保存正文", { rootDir });
     expect(fs.readFileSync(bodyPath, "utf8")).toBe("工作台保存正文");
     expect(inspectCodexChapterState(refreshed, 1, { rootDir }).phase).toBe("imported");
+  });
+
+  it("reads a generated chapter title from the filename", () => {
+    const workspace = completeWorkspace();
+    const info = syncNovelCodexProject(workspace, { rootDir });
+    const bodyPath = path.join(info.projectDir, "正文", "第002章__夜闯王府.md");
+    fs.writeFileSync(bodyPath, "第二章纯正文", "utf8");
+
+    expect(readCodexChapter(workspace, 2, { rootDir })).toMatchObject({ title: "夜闯王府", content: "第二章纯正文" });
+  });
+
+  it("keeps legacy filenames readable and renames them after a title is confirmed", () => {
+    const novel = repo.createNovel({ name: "旧文件名测试", referenceTitle: "", referenceSummary: "" });
+    repo.saveChapter(novel.id, 1, "旧文件正文", "saved", false);
+    const legacyWorkspace = repo.getNovelWorkspace(novel.id)!;
+    const info = syncNovelCodexProject(legacyWorkspace, { rootDir });
+    const legacyPath = path.join(info.projectDir, "正文", "第001章.md");
+    expect(readCodexChapter(legacyWorkspace, 1, { rootDir })).toMatchObject({ title: "", content: "旧文件正文" });
+
+    repo.saveChapter(novel.id, 1, "旧文件正文", "saved", false, "确认后的标题");
+    const titledWorkspace = repo.getNovelWorkspace(novel.id)!;
+    syncNovelCodexProject(titledWorkspace, { rootDir });
+
+    expect(fs.existsSync(legacyPath)).toBe(false);
+    expect(fs.readFileSync(path.join(info.projectDir, "正文", "第001章__确认后的标题.md"), "utf8")).toBe("旧文件正文");
   });
 
   it("renames the local project with the novel and preserves all existing files", () => {

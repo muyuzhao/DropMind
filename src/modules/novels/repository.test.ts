@@ -66,6 +66,14 @@ describe("novel repository", () => {
     expect(sqlite.prepare("select count(*) count from content_versions").get()).toMatchObject({ count: 1 });
   });
 
+  it("stores chapter titles and preserves them when only the body changes", () => {
+    const novel = repo.createNovel({ name: "测试小说", referenceTitle: "参考书", referenceSummary: "简介" });
+    repo.saveChapter(novel.id, 1, "第一版正文", "saved", false, "第1章：夜闯王府");
+    repo.saveChapter(novel.id, 1, "第二版正文", "saved", false);
+
+    expect(repo.getNovelWorkspace(novel.id)!.chapters[0]).toMatchObject({ title: "夜闯王府", content: "第二版正文" });
+  });
+
   it("restores versioned content and keeps the replaced content as an undo version", () => {
     const novel = repo.createNovel({ name: "测试小说", referenceTitle: "参考书", referenceSummary: "简介" });
     repo.saveStoryUnit(novel.id, 1, "剧情单元一", false);
@@ -112,7 +120,7 @@ describe("novel repository", () => {
     const previewUpdatedAt = Number(repo.getNovelWorkspace(novel.id)!.chapters[0].updatedAt);
     repo.saveChapter(novel.id, 1, "其他窗口修改", "saved", false);
 
-    expect(() => repo.importCodexChapter(novel.id, 1, "Codex正文", previewUpdatedAt, "预览时正文")).toThrow("其他窗口更新");
+    expect(() => repo.importCodexChapter(novel.id, 1, "Codex标题", "Codex正文", previewUpdatedAt, "", "预览时正文")).toThrow("其他窗口更新");
     expect(repo.getNovelWorkspace(novel.id)!.chapters[0].content).toBe("其他窗口修改");
   });
 

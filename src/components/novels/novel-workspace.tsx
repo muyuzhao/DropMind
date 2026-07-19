@@ -11,6 +11,7 @@ import type { ContentVersionData, NovelWorkspaceData } from "@/modules/novels/ty
 import { buildCoverPrompt, buildPromptContext } from "@/modules/novels/prompts";
 import { formatSelectedTopic, parseSelectedTopic } from "@/modules/novels/selected-topic";
 import { CODEX_DRAFT_COMMAND } from "@/modules/novels/structured-prompts";
+import { normalizeChapterTitle } from "@/modules/novels/chapter-title";
 import { STEP_LABELS } from "@/modules/novels/templates";
 import { buildWorkflowOverview, nextWorkActionLabel, nextWorkPosition, normalizeWorkPosition, type WorkPosition } from "@/modules/novels/work-state";
 import { ChapterSelector, type SelectorItemState } from "./chapter-selector";
@@ -25,7 +26,7 @@ import { WorkspaceConfirmDialog } from "./workspace-overlays";
 
 const SIDEBAR_STORAGE_KEY = "dropmind:novel-workbench:sidebar-open";
 
-type EditorSnapshot = { content: string; updatedAt: number | null };
+type EditorSnapshot = { title: string; content: string; updatedAt: number | null };
 type SavePhase = "idle" | "saving" | "error";
 type CodexChapterPreview = Extract<Awaited<ReturnType<typeof previewCodexChapterAction>>, { ok: true }>;
 type WorkspaceConfirmation = { kind: "stale-draft"; draft: LocalDraft; position: WorkPosition }
@@ -49,26 +50,26 @@ function editorSnapshot(data: NovelWorkspaceData, position: WorkPosition): Edito
     : position.step === "outlines" ? data.chapterOutlines.find((item) => Number(item.chapterNumber) === position.rangeStart)
     : position.step === "drafts" ? data.chapters.find((item) => Number(item.chapterNumber) === position.chapter)
     : data.steps.find((item) => item.key === position.step);
-  return { content: String(row?.content ?? ""), updatedAt: row?.updatedAt ? Number(row.updatedAt) : null };
+  return { title: position.step === "drafts" ? String((row as { title?: unknown } | undefined)?.title ?? "") : "", content: String(row?.content ?? ""), updatedAt: row?.updatedAt ? Number(row.updatedAt) : null };
 }
 
 function draftStorageKey(novelId: string, position: WorkPosition) {
   return `dropmind:novel-draft:${novelId}:${workKey(position)}`;
 }
 
-type LocalDraft = { content: string; updatedAt: number; baseUpdatedAt: number | null };
+type LocalDraft = { title?: string; content: string; updatedAt: number; baseUpdatedAt: number | null };
 
 function readLocalDraft(novelId: string, position: WorkPosition): LocalDraft | null {
   try {
     const raw = window.localStorage.getItem(draftStorageKey(novelId, position));
     if (!raw) return null;
     const draft = JSON.parse(raw) as Partial<LocalDraft>;
-    return typeof draft.content === "string" ? { content: draft.content, updatedAt: Number(draft.updatedAt ?? 0), baseUpdatedAt: typeof draft.baseUpdatedAt === "number" ? draft.baseUpdatedAt : null } : null;
+    return typeof draft.content === "string" ? { title: typeof draft.title === "string" ? draft.title : undefined, content: draft.content, updatedAt: Number(draft.updatedAt ?? 0), baseUpdatedAt: typeof draft.baseUpdatedAt === "number" ? draft.baseUpdatedAt : null } : null;
   } catch { return null; }
 }
 
-function writeLocalDraft(novelId: string, position: WorkPosition, content: string, baseUpdatedAt: number | null) {
-  try { window.localStorage.setItem(draftStorageKey(novelId, position), JSON.stringify({ content, updatedAt: Date.now(), baseUpdatedAt })); } catch { /* 浏览器禁用存储时仍可手动保存 */ }
+function writeLocalDraft(novelId: string, position: WorkPosition, content: string, baseUpdatedAt: number | null, title?: string) {
+  try { window.localStorage.setItem(draftStorageKey(novelId, position), JSON.stringify({ title, content, updatedAt: Date.now(), baseUpdatedAt })); } catch { /* 浏览器禁用存储时仍可手动保存 */ }
 }
 
 function clearLocalDraft(novelId: string, position: WorkPosition) {
@@ -115,6 +116,8 @@ export function NovelWorkspace({ initial, schemes, codexProject }: { initial: No
   const copyFeedbackTimer = useRef<number | null>(null);
   const [content, setContent] = useState(initialSnapshot.content);
   const [savedContent, setSavedContent] = useState(initialSnapshot.content);
+  const [chapterTitle, setChapterTitle] = useState(initialSnapshot.title);
+  const [savedChapterTitle, setSavedChapterTitle] = useState(initialSnapshot.title);
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(initialSnapshot.updatedAt);
   const [savePhase, setSavePhase] = useState<SavePhase>("idle");
   const savedContentCache = useRef(new Map<string, EditorSnapshot>([[workKey(initialPosition), initialSnapshot]]));
@@ -129,8 +132,9 @@ export function NovelWorkspace({ initial, schemes, codexProject }: { initial: No
   const [savedFirstVolumeOutline, setSavedFirstVolumeOutline] = useState(String(initial.novel.firstVolumeOutline ?? ""));
   const position = useMemo(() => ({ step, rangeStart, chapter }), [step, rangeStart, chapter]);
   const positionKey = workKey(position);
-  const isDirty = content !== savedContent;
-  const editorStateRef = useRef({ step, chapter, rangeStart, content, isDirty });
+  const chapterTitleDirty = step === "drafts" && chapterTitle !== savedChapterTitle;
+  const isDirty = content !== savedContent || chapterTitleDirty;
+  const editorStateRef = useRef({ step, chapter, rangeStart, title: chapterTitle, content, isDirty });
   const followingPosition = nextWorkPosition(position);
   const nextActionLabel = nextWorkActionLabel(position);
   const workflowOverview = useMemo(() => buildWorkflowOverview(initial), [initial]);
@@ -207,12 +211,12 @@ export function NovelWorkspace({ initial, schemes, codexProject }: { initial: No
 
   const currentChapterStatus = chapterStatusOverrides.get(chapter) ?? String(initial.chapters.find((row) => Number(row.chapterNumber) === chapter)?.status ?? "not_started") as ChapterStatus;
   useEffect(() => {
-    editorStateRef.current = { step, chapter, rangeStart, content, isDirty };
-  }, [chapter, content, isDirty, rangeStart, step]);
+    editorStateRef.current = { step, chapter, rangeStart, title: chapterTitle, content, isDirty };
+  }, [chapter, chapterTitle, content, isDirty, rangeStart, step]);
 
-  const acceptAutomatedChapters = useCallback((chapters: Array<{ chapterNumber: number; content: string }>) => {
+  const acceptAutomatedChapters = useCallback((chapters: Array<{ chapterNumber: number; title: string; content: string }>) => {
     const timestamp = currentTimestamp();
-    for (const imported of chapters) savedContentCache.current.set(`drafts-${imported.chapterNumber}`, { content: imported.content, updatedAt: timestamp });
+    for (const imported of chapters) savedContentCache.current.set(`drafts-${imported.chapterNumber}`, { title: imported.title, content: imported.content, updatedAt: timestamp });
     setChapterStatusOverrides((current) => {
       const next = new Map(current);
       for (const imported of chapters) next.set(imported.chapterNumber, "saved");
@@ -221,17 +225,19 @@ export function NovelWorkspace({ initial, schemes, codexProject }: { initial: No
     const editor = editorStateRef.current;
     const current = editor.step === "drafts" ? chapters.find((imported) => imported.chapterNumber === editor.chapter) : null;
     if (current) {
+      setSavedChapterTitle(current.title);
       setSavedContent(current.content);
       setLastSavedAt(timestamp);
       if (editor.isDirty) {
-        writeLocalDraft(String(initial.novel.id), { step: "drafts", rangeStart: editor.rangeStart, chapter: editor.chapter }, editor.content, timestamp);
+        writeLocalDraft(String(initial.novel.id), { step: "drafts", rangeStart: editor.rangeStart, chapter: editor.chapter }, editor.content, timestamp, editor.title);
         setMessage("自动正文已导入；当前正在编辑的本地草稿已保留，请核对后保存");
       } else {
+        setChapterTitle(current.title);
         setContent(current.content);
         clearLocalDraft(String(initial.novel.id), { step: "drafts", rangeStart: editor.rangeStart, chapter: editor.chapter });
       }
     }
-  }, [initial.novel.id, setChapterStatusOverrides, setContent, setLastSavedAt, setMessage, setSavedContent]);
+  }, [initial.novel.id, setChapterStatusOverrides, setChapterTitle, setContent, setLastSavedAt, setMessage, setSavedChapterTitle, setSavedContent]);
 
   useEffect(() => {
     if (automationMode) return;
@@ -277,19 +283,22 @@ export function NovelWorkspace({ initial, schemes, codexProject }: { initial: No
       const snapshot = editorSnapshot(initial, position);
       savedContentCache.current.set(positionKey, snapshot);
       if (isDirty) {
-        if (snapshot.content === savedContent && snapshot.updatedAt === lastSavedAt) return;
+        if (snapshot.title === savedChapterTitle && snapshot.content === savedContent && snapshot.updatedAt === lastSavedAt) return;
+        setSavedChapterTitle(snapshot.title);
         setSavedContent(snapshot.content);
         setLastSavedAt(snapshot.updatedAt);
-        writeLocalDraft(String(initial.novel.id), position, content, snapshot.updatedAt);
+        writeLocalDraft(String(initial.novel.id), position, content, snapshot.updatedAt, step === "drafts" ? chapterTitle : undefined);
         setMessage("后台内容已更新；当前本地草稿已保留，请核对后保存");
         return;
       }
+      setChapterTitle(snapshot.title);
+      setSavedChapterTitle(snapshot.title);
       setContent(snapshot.content);
       setSavedContent(snapshot.content);
       setLastSavedAt(snapshot.updatedAt);
     }, 0);
     return () => window.clearTimeout(timeout);
-  }, [content, initial, isDirty, lastSavedAt, position, positionKey, savedContent]);
+  }, [chapterTitle, content, initial, isDirty, lastSavedAt, position, positionKey, savedChapterTitle, savedContent, step]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -329,14 +338,15 @@ export function NovelWorkspace({ initial, schemes, codexProject }: { initial: No
   useEffect(() => {
     const timeout = window.setTimeout(() => {
       const draft = readLocalDraft(String(initial.novel.id), position);
-      if (draft !== null && draft.content !== savedContent) {
+      const draftTitle = step === "drafts" ? String(draft?.title ?? savedChapterTitle) : "";
+      if (draft !== null && (draft.content !== savedContent || draftTitle !== savedChapterTitle)) {
         const sameBase = draft.baseUpdatedAt === lastSavedAt;
-        if (sameBase) { setContent(draft.content); setMessage("已恢复本地草稿"); }
+        if (sameBase) { if (step === "drafts") setChapterTitle(draftTitle); setContent(draft.content); setMessage("已恢复本地草稿"); }
         else setConfirmation({ kind: "stale-draft", draft, position });
-      } else if (draft?.content === savedContent) clearLocalDraft(String(initial.novel.id), position);
+      } else if (draft?.content === savedContent && draftTitle === savedChapterTitle) clearLocalDraft(String(initial.novel.id), position);
     }, 0);
     return () => window.clearTimeout(timeout);
-  }, [initial.novel.id, position, positionKey, savedContent, lastSavedAt]);
+  }, [initial.novel.id, lastSavedAt, position, positionKey, savedChapterTitle, savedContent, step]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -364,7 +374,7 @@ export function NovelWorkspace({ initial, schemes, codexProject }: { initial: No
 
   function guard(action: GuardedAction) {
     if (!hasUnsavedChanges) return false;
-    if (isDirty) writeLocalDraft(String(initial.novel.id), position, content, lastSavedAt);
+    if (isDirty) writeLocalDraft(String(initial.novel.id), position, content, lastSavedAt, step === "drafts" ? chapterTitle : undefined);
     setGuardedAction(action);
     return true;
   }
@@ -435,6 +445,8 @@ export function NovelWorkspace({ initial, schemes, codexProject }: { initial: No
     setChapterNewBatchStart(null);
     if (samePosition) { scrollToWorkspaceTop(); return; }
     const snapshot = savedContentCache.current.get(workKey(normalized)) ?? editorSnapshot(initial, normalized);
+    setChapterTitle(snapshot.title);
+    setSavedChapterTitle(snapshot.title);
     setContent(snapshot.content);
     setSavedContent(snapshot.content);
     setLastSavedAt(snapshot.updatedAt);
@@ -448,9 +460,16 @@ export function NovelWorkspace({ initial, schemes, codexProject }: { initial: No
   }
 
   function changeContent(value: string) {
-    if (value === savedContent) clearLocalDraft(String(initial.novel.id), position);
-    else writeLocalDraft(String(initial.novel.id), position, value, lastSavedAt);
+    if (value === savedContent && chapterTitle === savedChapterTitle) clearLocalDraft(String(initial.novel.id), position);
+    else writeLocalDraft(String(initial.novel.id), position, value, lastSavedAt, step === "drafts" ? chapterTitle : undefined);
     setContent(value);
+    setSavePhase("idle");
+  }
+
+  function changeChapterTitle(value: string) {
+    setChapterTitle(value);
+    if (value === savedChapterTitle && content === savedContent) clearLocalDraft(String(initial.novel.id), position);
+    else writeLocalDraft(String(initial.novel.id), position, content, lastSavedAt, value);
     setSavePhase("idle");
   }
 
@@ -460,13 +479,17 @@ export function NovelWorkspace({ initial, schemes, codexProject }: { initial: No
     let result;
     if (step === "units") result = await saveUnitAction({ novelId: initial.novel.id, startChapter: rangeStart, content, draft: false });
     else if (step === "outlines") result = await saveOutlineBatchAction({ novelId: initial.novel.id, startChapter: rangeStart, content, draft: false });
-    else if (step === "drafts") result = await saveChapterAction({ novelId: initial.novel.id, chapterNumber: chapter, content, status: "saved" as ChapterStatus, draft: false });
+    else if (step === "drafts") result = await saveChapterAction({ novelId: initial.novel.id, chapterNumber: chapter, title: chapterTitle, content, status: "saved" as ChapterStatus, draft: false });
     else result = await saveStepAction({ novelId: initial.novel.id, key: step, content, draft: false });
     if (!result.ok) { setSavePhase("error"); setMessage(result.error); return false; }
     const timestamp = currentTimestamp();
-    const snapshot = { content, updatedAt: timestamp };
+    const snapshot = { title: step === "drafts" ? normalizeChapterTitle(chapterTitle) : "", content, updatedAt: timestamp };
     savedContentCache.current.set(positionKey, snapshot);
     clearLocalDraft(String(initial.novel.id), position);
+    if (step === "drafts") {
+      setChapterTitle(snapshot.title);
+      setSavedChapterTitle(snapshot.title);
+    }
     setSavedContent(content);
     setLastSavedAt(timestamp);
     setSavePhase("idle");
@@ -530,14 +553,14 @@ export function NovelWorkspace({ initial, schemes, codexProject }: { initial: No
     setMessage("正在读取 Codex 正文…");
     const preview=await previewCodexChapterAction({novelId:String(initial.novel.id),chapterNumber:chapter});
     if(!preview.ok){setMessage(preview.error);return;}
-    const databaseDiffers=preview.databaseContent.trim()!==""&&preview.databaseContent!==preview.content;
+    const databaseDiffers=(preview.databaseTitle.trim()!==""||preview.databaseContent.trim()!=="")&&(preview.databaseTitle!==preview.title||preview.databaseContent!==preview.content);
     if(isDirty||databaseDiffers){setConfirmation({ kind: "import-codex", preview });return;}
     await applyCodexImport(preview);
   }
 
   async function applyCodexImport(preview: CodexChapterPreview) {
-    const result=await importCodexChapterAction({novelId:String(initial.novel.id),chapterNumber:chapter,expectedUpdatedAt:preview.databaseUpdatedAt,expectedDatabaseContent:preview.databaseContent,expectedFileContent:preview.content});
-    if(result.ok){const timestamp=currentTimestamp();const snapshot={content:result.content,updatedAt:timestamp};savedContentCache.current.set(positionKey,snapshot);clearLocalDraft(String(initial.novel.id),position);setContent(result.content);setSavedContent(result.content);setLastSavedAt(timestamp);setSavePhase("idle");setChapterStatusOverrides((current)=>new Map(current).set(chapter,"saved"));setMessage(`已读取并保存第${chapter}章正文`);router.refresh();await refreshCodexState();}else setMessage(result.error);
+    const result=await importCodexChapterAction({novelId:String(initial.novel.id),chapterNumber:chapter,expectedUpdatedAt:preview.databaseUpdatedAt,expectedDatabaseTitle:preview.databaseTitle,expectedDatabaseContent:preview.databaseContent,expectedFileTitle:preview.title,expectedFileContent:preview.content});
+    if(result.ok){const timestamp=currentTimestamp();const snapshot={title:result.title,content:result.content,updatedAt:timestamp};savedContentCache.current.set(positionKey,snapshot);clearLocalDraft(String(initial.novel.id),position);setChapterTitle(result.title);setSavedChapterTitle(result.title);setContent(result.content);setSavedContent(result.content);setLastSavedAt(timestamp);setSavePhase("idle");setChapterStatusOverrides((current)=>new Map(current).set(chapter,"saved"));setMessage(`已读取并保存第${chapter}章《${result.title||"未命名"}》`);router.refresh();await refreshCodexState();}else setMessage(result.error);
   }
 
   async function saveNovelField(field: "selectedTopic" | "firstVolumeOutline", value: string, success: string) {
@@ -586,7 +609,7 @@ export function NovelWorkspace({ initial, schemes, codexProject }: { initial: No
     } else if (version.contentType === "template") setInstructionOverride(null);
     else {
       const timestamp = currentTimestamp();
-      const snapshot = { content: version.content, updatedAt: timestamp };
+      const snapshot = { title: step === "drafts" ? savedChapterTitle : "", content: version.content, updatedAt: timestamp };
       savedContentCache.current.set(positionKey, snapshot);
       clearLocalDraft(String(initial.novel.id), position);
       setContent(version.content); setSavedContent(version.content); setLastSavedAt(timestamp); setSavePhase("idle");
@@ -599,6 +622,7 @@ export function NovelWorkspace({ initial, schemes, codexProject }: { initial: No
     const pending = confirmation;
     if (!pending || confirmationBusy) return;
     if (pending.kind === "stale-draft") {
+      if (pending.position.step === "drafts") setChapterTitle(String(pending.draft.title ?? savedChapterTitle));
       setContent(pending.draft.content);
       setMessage("已恢复旧版草稿，请核对后保存");
       setConfirmation(null);
@@ -653,14 +677,14 @@ export function NovelWorkspace({ initial, schemes, codexProject }: { initial: No
   const confirmationDescription = confirmation?.kind === "stale-draft"
     ? "这份草稿基于较旧的正式版本。恢复后请核对差异再保存；取消不会删除本机草稿。"
     : confirmation?.kind === "import-codex"
-      ? `Codex 正文 ${confirmation.preview.content.length} 字符，工作台当前内容 ${content.length} 字符。覆盖前的正式正文会保留在历史版本中。`
+      ? `Codex 章节《${confirmation.preview.title || "未命名"}》正文 ${confirmation.preview.content.length} 字符，工作台当前内容 ${content.length} 字符。覆盖前的正式正文会保留在历史版本中。`
       : confirmation?.kind === "restore-version"
         ? "恢复后，当前正式内容会先自动进入历史版本，随时可以再次找回。"
         : `删除后无法在工作台恢复。请输入小说名称“${initial.novel.name}”确认。`;
 
   const promptEditor = <section className="editor-panel prompt-editor-panel">{step === "tags" ? <div className="publish-preparation-prompts"><div><div className="panel-title"><h3>作品标签提示词</h3><div className="panel-title-actions"><button type="button" disabled={promptMissing.length > 0 || !promptText.trim()} onClick={copyPrompt}>{copyFeedback === "tags-prompt" ? "已复制" : "复制标签提示词"}</button></div></div>{promptMissing.length > 0 && <div className="missing-links"><strong>还缺少：</strong>{promptMissing.map((label) => <button type="button" key={label} onClick={() => openMissing(label)}>{label} →</button>)}</div>}<textarea value={promptText} readOnly rows={18} /></div><div><div className="panel-title"><h3>番茄爽文小说封面创作</h3><div className="panel-title-actions"><button type="button" disabled={coverMissing} onClick={() => copyText(coverPrompt, "cover-prompt")}>{copyFeedback === "cover-prompt" ? "已复制" : "复制封面提示词"}</button></div></div>{coverMissing && <div className="missing-links"><strong>还缺少：</strong>{!selectedTopicSummary.trim() && <button type="button" onClick={() => openPosition({ ...position, step: "topics" })}>简介 →</button>}{!coverInstruction.trim() && <span>封面创作要求</span>}</div>}<textarea value={coverPrompt} readOnly rows={14} /></div></div> : <><div className="panel-title"><h3>{step === "drafts" ? "Codex 短指令" : "最终提示词（可临时修改）"}</h3><div className="panel-title-actions"><button type="button" className="button-quiet" onClick={() => setPromptOverride(null)}>恢复默认提示词</button><button type="button" disabled={promptMissing.length > 0 || !promptText.trim()} onClick={() => copyText(promptText, "main-prompt")}>{copyFeedback === "main-prompt" ? "已复制" : "复制提示词"}</button></div></div>{promptMissing.length > 0 && <div className="missing-links"><strong>还缺少：</strong>{promptMissing.map((label) => <button type="button" key={label} onClick={() => openMissing(label)}>{label} →</button>)}</div>}<textarea value={promptText} onChange={(event) => setPromptOverride({ key: promptKey, value: event.target.value })} rows={step === "drafts" ? 6 : 22} /></>}</section>;
 
-  const resultEditor = <section className="editor-panel result-editor-panel"><div className="panel-title"><h3>{step === "drafts" ? `第 ${chapter} 章正文` : step === "tags" ? "粘贴 Gemini 推荐的作品标签" : "粘贴 Gemini 返回内容"}</h3><div className="editor-meta"><span className={`save-status ${saveStatus.kind}`}>{saveStatus.label}</span><span>{content.length} 字符</span></div></div><textarea key={positionKey} value={content} onChange={(event) => changeContent(event.target.value)} rows={step === "tags" ? 34 : 22} placeholder={step === "drafts" ? "Codex 正文读取后会显示在这里，也可以手动粘贴…" : step === "tags" ? "将 Gemini 推荐的主分类、主题、角色、情节和主角名原样粘贴到这里…" : "在这里粘贴生成结果…"} /><div className="editor-toolbar"><div>{followingPosition && isDirty && <button className="button-quiet" type="button" disabled={savePhase === "saving"} onClick={saveCurrent}>仅保存</button>}{followingPosition && advanceLabel && <button type="button" disabled={advanceDisabled} onClick={saveAndAdvance}>{advanceLabel}</button>}{!followingPosition && isDirty && <button type="button" disabled={savePhase === "saving"} onClick={saveCurrent}>保存</button>}{step === "drafts" && content.trim() && <button className="button-secondary publish-toggle" type="button" disabled={savePhase === "saving" || isDirty} onClick={() => setPublished(currentChapterStatus !== "published")}>{currentChapterStatus === "published" ? "撤回发布标记" : "标记为已发布"}</button>}</div></div></section>;
+  const resultEditor = <section className="editor-panel result-editor-panel"><div className="panel-title"><h3>{step === "drafts" ? `第 ${chapter} 章正文` : step === "tags" ? "粘贴 Gemini 推荐的作品标签" : "粘贴 Gemini 返回内容"}</h3><div className="editor-meta"><span className={`save-status ${saveStatus.kind}`}>{saveStatus.label}</span><span>{content.length} 字符</span></div></div>{step === "drafts" && <label className="chapter-title-field"><span>章节标题</span><input value={chapterTitle} maxLength={60} onChange={(event) => changeChapterTitle(event.target.value)} placeholder="Codex 生成后会从正文文件名读取，也可以手动填写" /></label>}<textarea key={positionKey} value={content} onChange={(event) => changeContent(event.target.value)} rows={step === "tags" ? 34 : 22} placeholder={step === "drafts" ? "Codex 正文读取后会显示在这里，也可以手动粘贴…" : step === "tags" ? "将 Gemini 推荐的主分类、主题、角色、情节和主角名原样粘贴到这里…" : "在这里粘贴生成结果…"} /><div className="editor-toolbar"><div>{followingPosition && isDirty && <button className="button-quiet" type="button" disabled={savePhase === "saving"} onClick={saveCurrent}>仅保存</button>}{followingPosition && advanceLabel && <button type="button" disabled={advanceDisabled} onClick={saveAndAdvance}>{advanceLabel}</button>}{!followingPosition && isDirty && <button type="button" disabled={savePhase === "saving"} onClick={saveCurrent}>保存</button>}{step === "drafts" && content.trim() && <button className="button-secondary publish-toggle" type="button" disabled={savePhase === "saving" || isDirty} onClick={() => setPublished(currentChapterStatus !== "published")}>{currentChapterStatus === "published" ? "撤回发布标记" : "标记为已发布"}</button>}</div></div></section>;
 
   return <main className={`workspace-shell ${sidebarOpen?"sidebar-open":"sidebar-closed"}`}>
     <WorkflowSidebar open={sidebarOpen} novelName={initial.novel.name} activeStep={step} position={position} overview={workflowOverview} onLeave={requestLeave} onOpen={openPosition} onToggle={() => setSidebarOpen((open) => { const next = !open; writeSidebarState(next); return next; })} onBackup={async () => { const result = await exportNovelAction(String(initial.novel.id), "json"); if (result.ok) download(result.content, `${initial.novel.name}-备份.json`, "application/json"); else setMessage(result.error); }} onExportText={async () => { const result = await exportNovelAction(String(initial.novel.id), "txt"); if (result.ok) download(result.content, `${initial.novel.name}-第一卷.txt`, "text/plain;charset=utf-8"); else setMessage(result.error); }} />

@@ -4,6 +4,7 @@ import { promptTemplateKeyValues, type ChapterStatus, type PromptTemplateKey, ty
 import { getNovelSqlite } from "../../lib/novel-db";
 import { stripLegacyPlaceholders } from "./structured-prompts";
 import { DEFAULT_PROMPT_TEMPLATES } from "./templates";
+import { normalizeChapterTitle } from "./chapter-title";
 import type { NovelBackupWorkspace } from "./backup";
 import type { ChapterData, ChapterOutlineData, ContentVersionData, NovelData, NovelListItem, NovelStepData, NovelWorkspaceData, PromptSchemeData, PromptSchemeSummary, PromptTemplateData, StoryUnitData, VersionedContentType } from "./types";
 
@@ -85,8 +86,8 @@ export function createNovelRepository(sqlite: Database.Database) {
         const insertOutline = sqlite.prepare("insert into chapter_outlines (id,novel_id,chapter_number,content,is_draft,created_at,updated_at) values (?,?,?,?,?,?,?)");
         for (const row of workspace.chapterOutlines) insertOutline.run(randomUUID(), id, row.chapterNumber, row.content, row.isDraft ? 1 : 0, timestamp, timestamp);
 
-        const insertChapter = sqlite.prepare("insert into chapters (id,novel_id,chapter_number,content,status,is_draft,created_at,updated_at) values (?,?,?,?,?,?,?,?)");
-        for (const row of workspace.chapters) insertChapter.run(randomUUID(), id, row.chapterNumber, row.content, row.status, row.isDraft ? 1 : 0, timestamp, timestamp);
+        const insertChapter = sqlite.prepare("insert into chapters (id,novel_id,chapter_number,title,content,status,is_draft,created_at,updated_at) values (?,?,?,?,?,?,?,?,?)");
+        for (const row of workspace.chapters) insertChapter.run(randomUUID(), id, row.chapterNumber, normalizeChapterTitle(row.title), row.content, row.status, row.isDraft ? 1 : 0, timestamp, timestamp);
 
         const insertVersion = sqlite.prepare("insert into content_versions (id,novel_id,content_type,content_key,content,created_at) values (?,?,?,?,?,?)");
         for (const row of workspace.contentVersions) insertVersion.run(randomUUID(), id, row.contentType, row.contentKey, row.content, row.createdAt);
@@ -226,48 +227,51 @@ export function createNovelRepository(sqlite: Database.Database) {
       })();
     },
 
-    saveChapter(novelId: string, chapterNumber: number, content: string, status: ChapterStatus, draft: boolean) {
+    saveChapter(novelId: string, chapterNumber: number, content: string, status: ChapterStatus, draft: boolean, title?: string) {
       sqlite.transaction(() => {
+        const current = sqlite.prepare("select title from chapters where novel_id=? and chapter_number=?").get(novelId, chapterNumber) as { title: string } | undefined;
+        const nextTitle = title === undefined ? String(current?.title ?? "") : normalizeChapterTitle(title);
         if (!draft) versionPrevious(novelId, "chapter", String(chapterNumber), "chapters", "novel_id=? and chapter_number=?", [novelId, chapterNumber], content);
         const timestamp = now();
-        sqlite.prepare(`insert into chapters (id,novel_id,chapter_number,content,status,is_draft,created_at,updated_at)
-          values (?,?,?,?,?,?,?,?) on conflict(novel_id,chapter_number) do update set content=excluded.content,status=excluded.status,is_draft=excluded.is_draft,updated_at=excluded.updated_at`)
-          .run(randomUUID(), novelId, chapterNumber, content, status, draft ? 1 : 0, timestamp, timestamp); touch(novelId);
+        sqlite.prepare(`insert into chapters (id,novel_id,chapter_number,title,content,status,is_draft,created_at,updated_at)
+          values (?,?,?,?,?,?,?,?,?) on conflict(novel_id,chapter_number) do update set title=excluded.title,content=excluded.content,status=excluded.status,is_draft=excluded.is_draft,updated_at=excluded.updated_at`)
+          .run(randomUUID(), novelId, chapterNumber, nextTitle, content, status, draft ? 1 : 0, timestamp, timestamp); touch(novelId);
       })();
     },
 
-    importCodexChapter(novelId: string, chapterNumber: number, content: string, expectedUpdatedAt: number | null, expectedDatabaseContent: string) {
+    importCodexChapter(novelId: string, chapterNumber: number, title: string, content: string, expectedUpdatedAt: number | null, expectedDatabaseTitle: string, expectedDatabaseContent: string) {
       sqlite.transaction(() => {
-        const current = sqlite.prepare("select content,updated_at from chapters where novel_id=? and chapter_number=?").get(novelId, chapterNumber) as { content: string; updated_at: number } | undefined;
-        if ((current?.updated_at ?? null) !== expectedUpdatedAt || (current?.content ?? "") !== expectedDatabaseContent) throw new Error("工作台中的正文已在其他窗口更新，请重新读取 Codex 正文后再导入");
+        const current = sqlite.prepare("select title,content,updated_at from chapters where novel_id=? and chapter_number=?").get(novelId, chapterNumber) as { title: string; content: string; updated_at: number } | undefined;
+        if ((current?.updated_at ?? null) !== expectedUpdatedAt || (current?.title ?? "") !== expectedDatabaseTitle || (current?.content ?? "") !== expectedDatabaseContent) throw new Error("工作台中的章节标题或正文已在其他窗口更新，请重新读取 Codex 正文后再导入");
         versionPrevious(novelId, "chapter", String(chapterNumber), "chapters", "novel_id=? and chapter_number=?", [novelId, chapterNumber], content);
         const timestamp = now();
-        sqlite.prepare(`insert into chapters (id,novel_id,chapter_number,content,status,is_draft,created_at,updated_at)
-          values (?,?,?,?,?,?,?,?) on conflict(novel_id,chapter_number) do update set content=excluded.content,status=excluded.status,is_draft=excluded.is_draft,updated_at=excluded.updated_at`)
-          .run(randomUUID(), novelId, chapterNumber, content, "saved", 0, timestamp, timestamp);
+        sqlite.prepare(`insert into chapters (id,novel_id,chapter_number,title,content,status,is_draft,created_at,updated_at)
+          values (?,?,?,?,?,?,?,?,?) on conflict(novel_id,chapter_number) do update set title=excluded.title,content=excluded.content,status=excluded.status,is_draft=excluded.is_draft,updated_at=excluded.updated_at`)
+          .run(randomUUID(), novelId, chapterNumber, normalizeChapterTitle(title), content, "saved", 0, timestamp, timestamp);
         touch(novelId);
       })();
     },
 
-    importAutomatedChapters(input: { novelId: string; chapters: Array<{ chapterNumber: number; content: string; expectedUpdatedAt: number | null; expectedDatabaseContent: string }> }) {
+    importAutomatedChapters(input: { novelId: string; chapters: Array<{ chapterNumber: number; title: string; content: string; expectedUpdatedAt: number | null; expectedDatabaseTitle?: string; expectedDatabaseContent: string }> }) {
       return sqlite.transaction(() => {
         const rows = input.chapters.map((chapter) => {
-          const current = sqlite.prepare("select content,status,updated_at from chapters where novel_id=? and chapter_number=?")
-            .get(input.novelId, chapter.chapterNumber) as { content: string; status: ChapterStatus; updated_at: number } | undefined;
-          if ((current?.content ?? "") === chapter.content) return { chapter, current, changed: false };
-          if ((current?.updated_at ?? null) !== chapter.expectedUpdatedAt || (current?.content ?? "") !== chapter.expectedDatabaseContent) {
+          const current = sqlite.prepare("select title,content,status,updated_at from chapters where novel_id=? and chapter_number=?")
+            .get(input.novelId, chapter.chapterNumber) as { title: string; content: string; status: ChapterStatus; updated_at: number } | undefined;
+          const title = normalizeChapterTitle(chapter.title);
+          if ((current?.title ?? "") === title && (current?.content ?? "") === chapter.content) return { chapter: { ...chapter, title }, current, changed: false };
+          if ((current?.updated_at ?? null) !== chapter.expectedUpdatedAt || (current?.title ?? "") !== (chapter.expectedDatabaseTitle ?? "") || (current?.content ?? "") !== chapter.expectedDatabaseContent) {
             throw new Error(`第${chapter.chapterNumber}章已在任务创建后被修改，请新建正文生成任务`);
           }
           if (current?.status === "published") throw new Error(`第${chapter.chapterNumber}章已经发布，不能由自动任务覆盖`);
-          return { chapter, current, changed: true };
+          return { chapter: { ...chapter, title }, current, changed: true };
         });
         const changedRows = rows.filter((row) => row.changed);
         for (const { chapter } of changedRows) {
           versionPrevious(input.novelId, "chapter", String(chapter.chapterNumber), "chapters", "novel_id=? and chapter_number=?", [input.novelId, chapter.chapterNumber], chapter.content);
           const timestamp = now();
-          sqlite.prepare(`insert into chapters (id,novel_id,chapter_number,content,status,is_draft,created_at,updated_at)
-            values (?,?,?,?,?,?,?,?) on conflict(novel_id,chapter_number) do update set content=excluded.content,status=excluded.status,is_draft=excluded.is_draft,updated_at=excluded.updated_at`)
-            .run(randomUUID(), input.novelId, chapter.chapterNumber, chapter.content, "saved", 0, timestamp, timestamp);
+          sqlite.prepare(`insert into chapters (id,novel_id,chapter_number,title,content,status,is_draft,created_at,updated_at)
+            values (?,?,?,?,?,?,?,?,?) on conflict(novel_id,chapter_number) do update set title=excluded.title,content=excluded.content,status=excluded.status,is_draft=excluded.is_draft,updated_at=excluded.updated_at`)
+            .run(randomUUID(), input.novelId, chapter.chapterNumber, chapter.title, chapter.content, "saved", 0, timestamp, timestamp);
         }
         if (changedRows.length) touch(input.novelId);
         return changedRows.length;

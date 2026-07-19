@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS chapter_outlines (
 );
 CREATE TABLE IF NOT EXISTS chapters (
   id TEXT PRIMARY KEY, novel_id TEXT NOT NULL REFERENCES novels(id) ON DELETE CASCADE,
-  chapter_number INTEGER NOT NULL, content TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'not_started',
+  chapter_number INTEGER NOT NULL, title TEXT NOT NULL DEFAULT '', content TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'not_started',
   is_draft INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
   UNIQUE(novel_id, chapter_number)
 );
@@ -57,11 +57,20 @@ export function initializeNovelDatabase(sqlite: Database.Database) {
   sqlite.exec(CREATE_SCHEMA);
   ensurePromptSchemeColumn(sqlite);
   ensureWorkPositionColumns(sqlite);
+  ensureChapterTitleColumn(sqlite);
   seedDefaultPromptScheme(sqlite);
   ensurePublishPromptTemplates(sqlite);
   migrateTenChapterWorkflow(sqlite);
   migrateStructuredPromptModel(sqlite);
   return sqlite;
+}
+
+function ensureChapterTitleColumn(sqlite: Database.Database) {
+  const columns = sqlite.prepare("pragma table_info(chapters)").all() as Array<{ name: string }>;
+  if (columns.some((column) => column.name === "title")) return;
+  const rows = (sqlite.prepare("select count(*) count from chapters").get() as { count: number }).count;
+  if (rows > 0) migrationBackup(sqlite, "chapter-titles-v1");
+  sqlite.exec("alter table chapters add column title TEXT NOT NULL DEFAULT ''");
 }
 
 function ensurePromptSchemeColumn(sqlite: Database.Database) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createNovelSchema, saveChapterSchema, saveWorkPositionSchema } from "./schemas";
+import { createNovelSchema, importCodexChapterSchema, saveChapterSchema, saveWorkPositionSchema } from "./schemas";
 
 describe("novel input schemas", () => {
   it("trims new novel fields", () => {
@@ -17,5 +17,20 @@ describe("novel input schemas", () => {
     const { saveUnitSchema } = await import("./schemas");
     expect(saveUnitSchema.safeParse({ novelId: "n1", startChapter: 51, content: "内容", draft: false }).success).toBe(true);
     expect(saveUnitSchema.safeParse({ novelId: "n1", startChapter: 56, content: "内容", draft: false }).success).toBe(false);
+  });
+
+  it("returns a readable error when a chapter timestamp is invalid", () => {
+    const result = importCodexChapterSchema.safeParse({
+      novelId: "n1",
+      chapterNumber: 1,
+      expectedUpdatedAt: Number.NaN,
+      expectedDatabaseTitle: "标题",
+      expectedDatabaseContent: "正文",
+      expectedFileTitle: "标题",
+      expectedFileContent: "正文",
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.issues[0]?.message).toBe("章节更新时间无效，请重新读取正文");
   });
 });

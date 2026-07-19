@@ -10,6 +10,7 @@ import {
   type AutomationOverallStatus,
 } from "./automation";
 import { getNovelCodexProjectInfo } from "./codex-project";
+import { chapterFileName, parseGeneratedChapter } from "./chapter-title";
 import { rangeForChapter } from "./ranges";
 import type { ChapterStatus } from "../../lib/novel-db/schema";
 import type { NovelWorkspaceData } from "./types";
@@ -30,6 +31,7 @@ export type ChapterAutomationNode = {
   logPath: string;
   imported: boolean;
   importedHash: string | null;
+  expectedDatabaseTitle?: string;
   expectedDatabaseContent: string;
   expectedUpdatedAt: number | null;
   startedAt: string | null;
@@ -46,7 +48,7 @@ export type ChapterSourceSnapshot = {
 };
 
 export type ChapterAutomationManifest = {
-  version: 1;
+  version: 1 | 2;
   kind: "chapters";
   runId: string;
   novelId: string;
@@ -67,7 +69,7 @@ export type ChapterAutomationManifest = {
 type ChapterAutomationImporter = {
   importAutomatedChapters(input: {
     novelId: string;
-    chapters: Array<{ chapterNumber: number; content: string; expectedUpdatedAt: number | null; expectedDatabaseContent: string }>;
+    chapters: Array<{ chapterNumber: number; title: string; content: string; expectedUpdatedAt: number | null; expectedDatabaseTitle?: string; expectedDatabaseContent: string }>;
   }): number;
 };
 
@@ -192,9 +194,9 @@ function chapterPrompt(chapter: number, startChapter: number) {
   const previous = chapter === 1
     ? "- 本章是第1章，没有上一章正文。"
     : chapter === startChapter
-      ? `- 上一章正文：../../正文/第${chapterLabel(chapter - 1)}章.md`
+      ? `- 上一章正文：../../正文/（在该目录中查找以“第${chapterLabel(chapter - 1)}章”开头的 Markdown 文件）`
       : `- 上一章正文：outputs/第${chapterLabel(chapter - 1)}章.md`;
-  return `# DropMind 自动正文节点：第${chapter}章\n\n你只创作第${chapter}章正文。小说资料已经保存在本地文件中，不要要求用户重复粘贴；记忆不确定、称谓不统一或发现冲突时，主动读取对应资料核对。\n\n## 本章必须读取\n\n- 正文创作要求：../../资料/正文创作要求.md\n- 本章剧情单元：../../资料/剧情单元/第${rangeLabel(range.start, range.end)}章.md\n- 本章分章大纲：../../资料/分章大纲/第${rangeLabel(range.start, range.end)}章.md\n${previous}\n- 本次任务连续性记录：outputs/continuity.md\n\n## 其他资料位置（按需读取）\n\n- 作品信息：../../资料/作品信息.md\n- 已选选题：../../资料/选题.md\n- 分卷大纲：../../资料/分卷大纲.md\n- 本卷大纲：../../资料/本卷大纲.md\n- 核心设定：../../资料/核心设定.md\n- 更早正文：../../正文/\n\n## 输出要求\n\n1. 从分章大纲中只定位并创作第${chapter}章，不提前写下一章。\n2. 衔接上一章，保持人物、时间、地点、信息差、伏笔和情绪变化连续。\n3. 最终回复先输出可直接入库的纯正文，不带章节标题、过程说明或总结。\n4. 正文结束后另起一行输出精确标记：<!-- DROPMIND_CONTINUITY -->\n5. 标记后用简短 Markdown 更新：人物位置与关系、目标与秘密、伏笔、时间线、冲突状态、下一章必须延续的事实。\n`;
+  return `# DropMind 自动正文节点：第${chapter}章\n\n你只创作第${chapter}章正文。小说资料已经保存在本地文件中，不要要求用户重复粘贴；记忆不确定、称谓不统一或发现冲突时，主动读取对应资料核对。\n\n## 本章必须读取\n\n- 正文创作要求：../../资料/正文创作要求.md\n- 本章剧情单元：../../资料/剧情单元/第${rangeLabel(range.start, range.end)}章.md\n- 本章分章大纲：../../资料/分章大纲/第${rangeLabel(range.start, range.end)}章.md\n${previous}\n- 本次任务连续性记录：outputs/continuity.md\n\n## 其他资料位置（按需读取）\n\n- 作品信息：../../资料/作品信息.md\n- 已选选题：../../资料/选题.md\n- 分卷大纲：../../资料/分卷大纲.md\n- 本卷大纲：../../资料/本卷大纲.md\n- 核心设定：../../资料/核心设定.md\n- 更早正文：../../正文/\n\n## 输出要求\n\n1. 从分章大纲中只定位并创作第${chapter}章，不提前写下一章。\n2. 衔接上一章，保持人物、时间、地点、信息差、伏笔和情绪变化连续。\n3. 根据本章正文拟定一个准确、有吸引力且不剧透核心反转的章节标题，不包含“第X章”前缀，最多60个字符。\n4. 最终回复第一行必须是精确格式：<!-- DROPMIND_TITLE: 章节标题 -->\n5. 标题标记后输出可直接入库的纯正文，正文中不重复章节标题，不写过程说明或总结。\n6. 正文结束后另起一行输出精确标记：<!-- DROPMIND_CONTINUITY -->\n7. 连续性标记后用简短 Markdown 更新：人物位置与关系、目标与秘密、伏笔、时间线、冲突状态、下一章必须延续的事实。\n`;
 }
 
 function makeRunId(now: Date) {
@@ -206,7 +208,8 @@ export function createChapterAutomationRun(workspace: NovelWorkspaceData, input:
   const project = getNovelCodexProjectInfo(workspace, { rootDir: options.rootDir });
   if (!project.exists) throw new Error("本地写作目录尚未同步");
   if (input.startChapter > 1) {
-    const previousPath = path.join(project.projectDir, "正文", `第${chapterLabel(input.startChapter - 1)}章.md`);
+    const previousChapter = chapterRow(workspace, input.startChapter - 1);
+    const previousPath = path.join(project.projectDir, "正文", chapterFileName(input.startChapter - 1, String(previousChapter?.title ?? "")));
     const localPrevious = fs.existsSync(previousPath) ? fs.readFileSync(previousPath, "utf8").trim() : "";
     const databasePrevious = String(chapterRow(workspace, input.startChapter - 1)?.content ?? "").trim();
     if (localPrevious !== databasePrevious) throw new Error(`第${input.startChapter - 1}章本地正文与工作台不一致，请先预览并导入或重新同步`);
@@ -233,6 +236,7 @@ export function createChapterAutomationRun(workspace: NovelWorkspaceData, input:
       logPath: slash(`logs/第${chapterLabel(chapter)}章.log`),
       imported: false,
       importedHash: null,
+      expectedDatabaseTitle: String(current?.title ?? ""),
       expectedDatabaseContent: String(current?.content ?? ""),
       expectedUpdatedAt: current?.updatedAt ? Number(current.updatedAt) : null,
       startedAt: null,
@@ -242,7 +246,7 @@ export function createChapterAutomationRun(workspace: NovelWorkspaceData, input:
     });
   }
   const manifest: ChapterAutomationManifest = {
-    version: 1,
+    version: 2,
     kind: "chapters",
     runId: id,
     novelId: String(workspace.novel.id),
@@ -334,31 +338,34 @@ export function reconcileChapterAutomationStaleness(runDir: string, manifest: Ch
   return true;
 }
 
-export function validateChapterAutomationOutput(node: ChapterAutomationNode, content: string) {
+export function validateChapterAutomationOutput(node: ChapterAutomationNode, content: string, requireTitle = false) {
   const trimmed = content.trim();
   if (!trimmed) throw new Error(`${node.label}输出为空`);
   const opening = trimmed.slice(0, 1200);
   if (/(?:无法|不能)(?:继续)?生成|请先(?:明确|确认|统一)|缺少(?:必要|上游)?资料/.test(opening)) throw new Error(`${node.label}返回了诊断信息而不是正文`);
-  return trimmed;
+  const parsed = parseGeneratedChapter(trimmed, { requireTitle });
+  if (!parsed.content) throw new Error(`${node.label}正文为空`);
+  return parsed;
 }
 
 export function importCompletedChapterAutomationRun(runDir: string, manifest: ChapterAutomationManifest, workspace: NovelWorkspaceData, importer: ChapterAutomationImporter, options: ChapterAutomationOptions = {}) {
-  if (manifest.nodes.every((node) => node.imported)) return { importedCount: 0, chapters: [] as Array<{ chapterNumber: number; content: string }> };
-  if (manifest.status !== "completed" || manifest.nodes.some((node) => node.status !== "completed")) return { importedCount: 0, chapters: [] as Array<{ chapterNumber: number; content: string }> };
-  if (reconcileChapterAutomationStaleness(runDir, manifest, workspace, options)) return { importedCount: 0, chapters: [] as Array<{ chapterNumber: number; content: string }> };
+  if (manifest.nodes.every((node) => node.imported)) return { importedCount: 0, chapters: [] as Array<{ chapterNumber: number; title: string; content: string }> };
+  if (manifest.status !== "completed" || manifest.nodes.some((node) => node.status !== "completed")) return { importedCount: 0, chapters: [] as Array<{ chapterNumber: number; title: string; content: string }> };
+  if (reconcileChapterAutomationStaleness(runDir, manifest, workspace, options)) return { importedCount: 0, chapters: [] as Array<{ chapterNumber: number; title: string; content: string }> };
   const chapters = manifest.nodes.map((node) => {
     const outputPath = path.join(runDir, node.outputPath);
     if (!fs.existsSync(outputPath)) throw new Error(`${node.label}输出文件不存在`);
-    return { chapterNumber: node.chapterNumber, content: validateChapterAutomationOutput(node, fs.readFileSync(outputPath, "utf8")), expectedUpdatedAt: node.expectedUpdatedAt, expectedDatabaseContent: node.expectedDatabaseContent };
+    const parsed = validateChapterAutomationOutput(node, fs.readFileSync(outputPath, "utf8"), manifest.version >= 2);
+    return { chapterNumber: node.chapterNumber, title: parsed.title, content: parsed.content, expectedUpdatedAt: node.expectedUpdatedAt, expectedDatabaseTitle: node.expectedDatabaseTitle, expectedDatabaseContent: node.expectedDatabaseContent };
   });
   importer.importAutomatedChapters({ novelId: manifest.novelId, chapters });
   for (const node of manifest.nodes) {
     const chapter = chapters.find((item) => item.chapterNumber === node.chapterNumber)!;
     node.imported = true;
-    node.importedHash = digest(chapter.content);
+    node.importedHash = digest(`${chapter.title}\n${chapter.content}`);
   }
   saveManifest(runDir, manifest, options);
-  return { importedCount: chapters.length, chapters: chapters.map(({ chapterNumber, content }) => ({ chapterNumber, content })) };
+  return { importedCount: chapters.length, chapters: chapters.map(({ chapterNumber, title, content }) => ({ chapterNumber, title, content })) };
 }
 
 export function requestChapterAutomationControl(runDir: string, action: AutomationControl["action"], options: ChapterAutomationOptions & { mode?: AutomationControl["mode"]; targetNodeId?: string | null } = {}) {

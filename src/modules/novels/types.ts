@@ -21,7 +21,7 @@ export type PromptTemplateData = { id: string; key: PromptTemplateKey; template:
 export type NovelStepData = { id: string; novelId: string; key: StepKey; content: string; isDraft: DraftFlag; createdAt: number; updatedAt: number };
 export type StoryUnitData = { id: string; novelId: string; startChapter: number; endChapter: number; content: string; isDraft: DraftFlag; createdAt: number; updatedAt: number };
 export type ChapterOutlineData = { id: string; novelId: string; chapterNumber: number; content: string; isDraft: DraftFlag; createdAt: number; updatedAt: number };
-export type ChapterData = { id: string; novelId: string; chapterNumber: number; content: string; status: ChapterStatus; isDraft: DraftFlag; createdAt: number; updatedAt: number };
+export type ChapterData = { id: string; novelId: string; chapterNumber: number; title: string; content: string; status: ChapterStatus; isDraft: DraftFlag; createdAt: number; updatedAt: number };
 export type VersionedContentType = "step" | "novel_field" | "story_unit" | "outline_batch" | "chapter" | "template";
 export type ContentVersionData = { id: string; novelId: string; contentType: VersionedContentType; contentKey: string; content: string; createdAt: number };
 

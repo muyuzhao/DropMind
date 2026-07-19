@@ -8,7 +8,7 @@ import { AUTOMATION_TASK_STATUS_LABELS, automationTaskProgress, chapterBatchEnd,
 import { inspectChapterAutomationRunQueued } from "./automation-inspection";
 import { AutomationArtifactDrawer, WorkspaceConfirmDialog, type ArtifactPreview } from "./workspace-overlays";
 
-type ImportedChapter = { chapterNumber: number; content: string };
+type ImportedChapter = { chapterNumber: number; title: string; content: string };
 type RunView = { runDir: string; manifest: ChapterAutomationManifest; importedCount?: number; importedChapters?: ImportedChapter[]; warning?: string | null };
 type PendingConfirmation = { kind: "overwrite"; chapters: number[] } | { kind: "recover" } | { kind: "terminate" };
 

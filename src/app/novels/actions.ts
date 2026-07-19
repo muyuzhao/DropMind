@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { ZodError } from "zod";
 import { createNovelBackup, exportVolumeText, parseNovelBackup } from "@/modules/novels/backup";
 import { createAutomationRun, getLatestAutomationRun, importCompletedAutomationNodes, listAutomationRuns, readAutomationArtifact, readAutomationManifest, reconcileAutomationStaleness, recoverInterruptedAutomationRun, refreshAutomationRunnerFiles, requestAutomationControl, restartAutomationFromNode, seedAutomationRunFromWorkspace } from "@/modules/novels/automation";
 import { createChapterAutomationRun, getLatestChapterAutomationRun, importCompletedChapterAutomationRun, listChapterAutomationRuns, readChapterAutomationArtifact, readChapterAutomationManifest, reconcileChapterAutomationStaleness, recoverInterruptedChapterAutomationRun, refreshChapterAutomationRunnerFiles, requestChapterAutomationControl } from "@/modules/novels/chapter-automation";
@@ -15,7 +16,15 @@ import {
 } from "@/modules/novels/schemas";
 
 function errorMessage(error: unknown) {
+  if (error instanceof ZodError) return error.issues.map((issue) => issue.message).join("；");
   return error instanceof Error ? error.message : "操作失败";
+}
+
+function databaseTimestamp(value: unknown) {
+  if (value === undefined || value === null) return null;
+  const timestamp = Number(value);
+  if (!Number.isSafeInteger(timestamp)) throw new Error("本章更新时间数据异常，请刷新页面后重试");
+  return timestamp;
 }
 
 function failure(error: unknown) {
@@ -134,7 +143,7 @@ export async function saveOutlineBatchAction(input: unknown) {
 export async function saveChapterAction(input: unknown) {
   try {
     const value = saveChapterSchema.parse(input);
-    novelRepository.saveChapter(value.novelId, value.chapterNumber, value.content, value.status, value.draft);
+    novelRepository.saveChapter(value.novelId, value.chapterNumber, value.content, value.status, value.draft, value.title);
     let warning: string | null = null;
     try { writeCodexChapter(workspaceFor(value.novelId), value.chapterNumber, value.content); } catch (error) { warning = `正文已保存，但 Codex 文件写入失败：${errorMessage(error)}`; }
     revalidatePath(`/novels/${value.novelId}`);
@@ -182,7 +191,7 @@ export async function previewCodexChapterAction(input: unknown) {
     const workspace = workspaceFor(value.novelId);
     const result = readCodexChapter(workspace, value.chapterNumber);
     const current = workspace.chapters.find((row) => Number(row.chapterNumber) === value.chapterNumber);
-    return { ok: true as const, content: result.content, filePath: result.filePath, databaseContent: String(current?.content ?? ""), databaseUpdatedAt: current?.updatedAt ? Number(current.updatedAt) : null };
+    return { ok: true as const, title: result.title, content: result.content, filePath: result.filePath, databaseTitle: String(current?.title ?? ""), databaseContent: String(current?.content ?? ""), databaseUpdatedAt: databaseTimestamp(current?.updatedAt) };
   } catch (error) { return failure(error); }
 }
 
@@ -190,10 +199,10 @@ export async function importCodexChapterAction(input: unknown) {
   try {
     const value = importCodexChapterSchema.parse(input);
     const result = readCodexChapter(workspaceFor(value.novelId), value.chapterNumber);
-    if (result.content !== value.expectedFileContent) throw new Error("Codex 正文文件在确认期间发生了变化，请重新读取后再导入");
-    novelRepository.importCodexChapter(value.novelId, value.chapterNumber, result.content, value.expectedUpdatedAt, value.expectedDatabaseContent);
+    if (result.title !== value.expectedFileTitle || result.content !== value.expectedFileContent) throw new Error("Codex 章节标题或正文文件在确认期间发生了变化，请重新读取后再导入");
+    novelRepository.importCodexChapter(value.novelId, value.chapterNumber, result.title, result.content, value.expectedUpdatedAt, value.expectedDatabaseTitle, value.expectedDatabaseContent);
     revalidatePath(`/novels/${value.novelId}`);
-    return { ok: true as const, content: result.content, filePath: result.filePath };
+    return { ok: true as const, title: result.title, content: result.content, filePath: result.filePath };
   } catch (error) { return failure(error); }
 }
 
@@ -298,7 +307,7 @@ export async function inspectChapterAutomationRunAction(input: unknown) {
     if (!latest) return { ok: true as const, run: null };
     refreshChapterAutomationRunnerFiles(latest.runDir, latest.manifest);
     let importedCount = 0;
-    let importedChapters: Array<{ chapterNumber: number; content: string }> = [];
+    let importedChapters: Array<{ chapterNumber: number; title: string; content: string }> = [];
     let warning: string | null = null;
     if (latest.manifest.status !== "running" && latest.manifest.status !== "pending") {
       reconcileChapterAutomationStaleness(latest.runDir, latest.manifest, workspace);
