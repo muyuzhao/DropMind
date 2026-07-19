@@ -23,16 +23,21 @@ describe("novel exports", () => {
       steps: [], storyUnits: [], chapterOutlines: [], chapters: [],
     };
     const json = JSON.stringify({ format: "dropmind-novel", version: 1, exportedAt: new Date().toISOString(), workspace });
-    expect(parseNovelBackup(json).workspace.contentVersions).toEqual([]);
+    const parsed = parseNovelBackup(json).workspace;
+    expect(parsed.contentVersions).toEqual([]);
+    expect(parsed.templates).toHaveLength(8);
+    expect(parsed.templates.find((row) => row.key === "tags")?.template).toContain("作品标签生成指南");
+    expect(parsed.templates.find((row) => row.key === "cover")?.template).toContain("比例：3：4");
   });
 
   it("exports content history in JSON backups", () => {
     const backup = JSON.parse(createNovelBackup({
       novel: { name: "新备份", referenceTitle: "参考", referenceSummary: "简介", selectedTopic: "", firstVolumeOutline: "", currentStep: "topics", currentRangeStart: 1, currentChapter: 1 },
-      templates: ["topics", "volumes", "settings", "units", "outlines", "drafts"].map((key) => ({ key, template: key })),
+      templates: ["topics", "volumes", "settings", "units", "outlines", "tags", "drafts"].map((key) => ({ key, template: key })),
       steps: [], storyUnits: [], chapterOutlines: [], chapters: [],
       contentVersions: [{ contentType: "chapter", contentKey: "1", content: "旧正文", createdAt: 1 }],
     }));
     expect(backup.workspace.contentVersions).toHaveLength(1);
+    expect(backup.workspace.templates.find((row: { key: string }) => row.key === "tags").template).toBe("tags");
   });
 });

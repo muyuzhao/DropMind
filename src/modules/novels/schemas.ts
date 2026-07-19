@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { chapterStatusValues, stepKeyValues } from "../../lib/novel-db/schema";
+import { chapterStatusValues, promptTemplateKeyValues, stepKeyValues } from "../../lib/novel-db/schema";
 
 const required = z.string().trim().min(1, "此项不能为空");
 const tenChapterStart = z.number().int().refine((value) => [1, 11, 21, 31, 41, 51].includes(value), "章节批次必须从1、11、21、31、41或51开始");
@@ -13,11 +13,12 @@ export const saveOutlineBatchSchema = z.object({ novelId: required, startChapter
 export const saveChapterSchema = z.object({ novelId: required, chapterNumber: z.number().int().min(1).max(60), content: z.string(), status: z.enum(chapterStatusValues), draft: z.boolean() });
 export const updateChapterStatusSchema = z.object({ novelId: required, chapterNumber: z.number().int().min(1).max(60), status: z.enum(["saved", "published"]) });
 export const chapterTaskSchema = z.object({ novelId: required, chapterNumber: z.number().int().min(1).max(60) });
+export const createChapterAutomationSchema = z.object({ novelId: required, startChapter: z.number().int().min(1).max(60), chapterCount: z.number().int().min(1).max(10) });
 export const importCodexChapterSchema = chapterTaskSchema.extend({ expectedUpdatedAt: z.number().int().nullable(), expectedDatabaseContent: z.string(), expectedFileContent: z.string() });
-export const updateTemplateSchema = z.object({ novelId: required, key: z.enum(stepKeyValues), template: required });
+export const updateTemplateSchema = z.object({ novelId: required, key: z.enum(promptTemplateKeyValues), template: required });
 export const restoreContentVersionSchema = z.object({ novelId: required, versionId: required });
 export const setNovelSchemeSchema = z.object({ novelId: required, schemeId: required });
 export const createSchemeSchema = z.object({ name: required.max(100), description: z.string().max(5000), sourceSchemeId: required.optional() });
 export const saveSchemeSchema = z.object({ id: required, name: required.max(100), description: z.string().max(5000) });
-export const saveSchemeTemplateSchema = z.object({ id: required, key: z.enum(stepKeyValues), template: required });
+export const saveSchemeTemplateSchema = z.object({ id: required, key: z.enum(promptTemplateKeyValues), template: required });
 export const idSchema = required;

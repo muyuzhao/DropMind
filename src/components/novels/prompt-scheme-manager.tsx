@@ -16,12 +16,14 @@ export function PromptSchemeManager({ initial }: { initial: Scheme[] }) {
   const [step, setStep] = useState<StepKey>("topics");
   const scheme = initial.find((item) => item.id === id) ?? initial[0];
   const baseTemplate = scheme?.templates.find((item) => item.key === step)?.template ?? "";
+  const baseCoverTemplate = scheme?.templates.find((item) => item.key === "cover")?.template ?? "";
   const [name, setName] = useState(scheme?.name ?? "");
   const [description, setDescription] = useState(scheme?.description ?? "");
   const [template, setTemplate] = useState(baseTemplate);
+  const [coverTemplate, setCoverTemplate] = useState(baseCoverTemplate);
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState("");
-  const dirty = Boolean(scheme) && (name !== scheme.name || description !== scheme.description || template !== baseTemplate);
+  const dirty = Boolean(scheme) && (name !== scheme.name || description !== scheme.description || template !== baseTemplate || (step === "tags" && coverTemplate !== baseCoverTemplate));
 
   useEffect(() => {
     if (!dirty) return;
@@ -42,6 +44,7 @@ export function PromptSchemeManager({ initial }: { initial: Scheme[] }) {
     setName(next.name);
     setDescription(next.description);
     setTemplate(next.templates.find((item) => item.key === step)?.template ?? "");
+    setCoverTemplate(next.templates.find((item) => item.key === "cover")?.template ?? "");
     setMessage("");
   }
 
@@ -51,6 +54,7 @@ export function PromptSchemeManager({ initial }: { initial: Scheme[] }) {
     setName(scheme.name);
     setDescription(scheme.description);
     setTemplate(scheme.templates.find((item) => item.key === next)?.template ?? "");
+    setCoverTemplate(scheme.templates.find((item) => item.key === "cover")?.template ?? "");
     setMessage("");
   }
 
@@ -72,12 +76,18 @@ export function PromptSchemeManager({ initial }: { initial: Scheme[] }) {
     }}>保存方案资料</button>
     <div className="novel-selector">{(Object.keys(STEP_LABELS) as StepKey[]).map((key) => <button type="button" className={key === step ? "active" : ""} onClick={() => pickStep(key)} key={key}>{STEP_LABELS[key]}</button>)}</div>
     <section className="automatic-context"><strong>本步骤自动加入</strong><div>{AUTOMATIC_CONTEXT_LABELS[step].map((label)=><span key={label}>{label}</span>)}</div><p>这些内容由工作台自动填写，不需要在创作要求里写变量。</p></section>
-    <label>创作要求</label>
+    <label>{step === "tags" ? "作品标签提示词" : "创作要求"}</label>
     <textarea rows={24} value={template} onChange={(event) => setTemplate(event.target.value)} />
     <button type="button" disabled={pending || template === baseTemplate} onClick={async () => {
       setPending(true); setMessage(""); const result = await saveSchemeTemplateAction({ id: scheme.id, key: step, template }); setPending(false);
       if (!result.ok) { setMessage(result.error); return; } router.refresh(); setMessage("当前模板已保存");
     }}>保存当前模板</button>
+    {step === "tags" && <><label>封面创作提示词</label>
+      <textarea rows={14} value={coverTemplate} onChange={(event) => setCoverTemplate(event.target.value)} />
+      <button type="button" disabled={pending || coverTemplate === baseCoverTemplate} onClick={async () => {
+        setPending(true); setMessage(""); const result = await saveSchemeTemplateAction({ id: scheme.id, key: "cover", template: coverTemplate }); setPending(false);
+        if (!result.ok) { setMessage(result.error); return; } router.refresh(); setMessage("封面提示词已保存");
+      }}>保存封面提示词</button></>}
     <button type="button" disabled={pending || Boolean(scheme.isDefault)} onClick={async () => {
       if (!confirmDiscard()) return; setPending(true); setMessage(""); const result = await defaultSchemeAction(scheme.id); setPending(false);
       if (!result.ok) { setMessage(result.error); return; } router.refresh(); setMessage("已设为默认方案");
@@ -87,7 +97,7 @@ export function PromptSchemeManager({ initial }: { initial: Scheme[] }) {
       setPending(true); setMessage(""); const result = await deleteSchemeAction(scheme.id); setPending(false);
       if (!result.ok) { setMessage(result.error); return; }
       const next = initial.find((item) => item.id !== scheme.id);
-      if (next) { setId(next.id); setName(next.name); setDescription(next.description); setTemplate(next.templates.find((item) => item.key === step)?.template ?? ""); }
+      if (next) { setId(next.id); setName(next.name); setDescription(next.description); setTemplate(next.templates.find((item) => item.key === step)?.template ?? ""); setCoverTemplate(next.templates.find((item) => item.key === "cover")?.template ?? ""); }
       router.refresh(); setMessage("方案已删除");
     }}>删除方案</button>}
     {message && <p className={message.includes("失败") || message.includes("不能为空") ? "novel-error" : "codex-project-message"}>{message}</p>}

@@ -38,8 +38,9 @@ export function nextWorkPosition(position: WorkPosition): WorkPosition | null {
     return position.rangeStart < 51 ? { ...position, rangeStart: position.rangeStart + 10 } : { step: "outlines", rangeStart: 1, chapter: 1 };
   }
   if (position.step === "outlines") {
-    return position.rangeStart < 51 ? { ...position, rangeStart: position.rangeStart + 10 } : { step: "drafts", rangeStart: 1, chapter: 1 };
+    return position.rangeStart < 51 ? { ...position, rangeStart: position.rangeStart + 10 } : { step: "tags", rangeStart: 1, chapter: 1 };
   }
+  if (position.step === "tags") return { step: "drafts", rangeStart: 1, chapter: 1 };
   if (position.step === "drafts") {
     return position.chapter < 60 ? { ...position, chapter: position.chapter + 1 } : null;
   }
@@ -49,7 +50,7 @@ export function nextWorkPosition(position: WorkPosition): WorkPosition | null {
 export function nextWorkActionLabel(position: WorkPosition) {
   const next = nextWorkPosition(position);
   if (!next) return null;
-  if (next.step !== position.step) return `保存并进入${stepKeyValues.indexOf(next.step) + 1 === 6 ? "正文" : `第${stepKeyValues.indexOf(next.step) + 1}步`}`;
+  if (next.step !== position.step) return `保存并进入${next.step === "drafts" ? "正文" : `第${stepKeyValues.indexOf(next.step) + 1}步`}`;
   return position.step === "drafts" ? "保存并进入下一章" : "保存并进入下一批";
 }
 
@@ -74,6 +75,7 @@ export function buildWorkflowProgress(input: ProgressInput): Record<StepKey, { c
     settings: { completed: savedStep("settings") ? 1 : 0, total: 1 },
     units: { completed: TEN_CHAPTER_RANGES.filter((range) => unitStarts.has(range.start)).length, total: 6 },
     outlines: { completed: TEN_CHAPTER_RANGES.filter((range) => outlineStarts.has(range.start)).length, total: 6 },
+    tags: { completed: savedStep("tags") ? 1 : 0, total: 1 },
     drafts: { completed: Array.from({ length: 60 }, (_, index) => index + 1).filter((chapter) => completedChapters.has(chapter)).length, total: 60 },
   };
 }
@@ -103,6 +105,7 @@ export function buildWorkflowOverview(input: ProgressInput): Record<StepKey, Wor
     settings: item("settings", savedStep("volumes") ? "" : "先保存分卷大纲"),
     units: item("units", !savedStep("settings") ? "先保存核心设定" : firstVolumeOutline ? "" : "先确认本卷大纲"),
     outlines: item("outlines", savedUnits > 0 ? "" : "先保存剧情单元"),
+    tags: item("tags", savedOutlines === 6 ? "" : "先完成分章大纲"),
     drafts: item("drafts", !savedStep("settings") ? "先保存核心设定" : savedUnits === 0 ? "先保存剧情单元" : savedOutlines > 0 ? "" : "先保存分章大纲"),
   };
 }

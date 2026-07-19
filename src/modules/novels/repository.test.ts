@@ -14,10 +14,10 @@ describe("novel repository", () => {
     repo = createNovelRepository(sqlite);
   });
 
-  it("creates a novel and seeds six templates", () => {
+  it("creates a novel and seeds all workflow and publishing templates", () => {
     const novel = repo.createNovel({ name: "测试小说", referenceTitle: "参考书", referenceSummary: "简介" });
     expect(repo.listNovels()[0].name).toBe("测试小说");
-    expect(repo.getTemplates(novel.id)).toHaveLength(6);
+    expect(repo.getTemplates(novel.id)).toHaveLength(8);
   });
 
   it("imports a complete JSON backup as a separate custom novel", () => {
@@ -36,7 +36,7 @@ describe("novel repository", () => {
     expect(imported.id).not.toBe(novel.id);
     expect(imported.name).toBe("测试小说（导入）");
     expect(workspace.promptSource).toMatchObject({ mode: "custom" });
-    expect(workspace.templates).toHaveLength(6);
+    expect(workspace.templates).toHaveLength(8);
     expect(workspace.steps[0].content).toBe("核心设定");
     expect(workspace.storyUnits[0].content).toBe("剧情单元");
     expect(workspace.chapterOutlines).toHaveLength(10);
@@ -154,7 +154,7 @@ describe("novel repository", () => {
 
   it("keeps novels live-linked to their selected scheme", () => {
     const scheme = repo.createPromptScheme({ name: "古言版", description: "古言测试" });
-    expect(repo.getPromptScheme(scheme.id)!.templates).toHaveLength(6);
+    expect(repo.getPromptScheme(scheme.id)!.templates).toHaveLength(8);
     const novel = repo.createNovel({ name: "测试", referenceTitle: "参考", referenceSummary: "简介" }, scheme.id);
     repo.updatePromptSchemeTemplate(scheme.id, "topics", "修改后的模板");
     expect(repo.getNovelWorkspace(novel.id)!.templates.find((row) => row.key === "topics")!.template).toBe("修改后的模板");
@@ -171,5 +171,18 @@ describe("novel repository", () => {
     expect(repo.getNovelWorkspace(novel.id)!.promptSource).toMatchObject({ mode: "custom" });
     repo.setNovelPromptScheme(novel.id, scheme.id);
     expect(repo.getNovelWorkspace(novel.id)!.templates.find((row) => row.key === "topics")!.template).toBe("方案版本二");
+  });
+
+  it("repairs missing work tag templates and allows prompt management to edit them", () => {
+    const novel = repo.createNovel({ name: "测试", referenceTitle: "参考", referenceSummary: "简介" });
+    sqlite.prepare("delete from prompt_scheme_templates where scheme_id=? and key='tags'").run("system-default");
+    expect(repo.getPromptScheme("system-default")!.templates.find((row) => row.key === "tags")?.template).toContain("作品标签生成指南");
+    repo.updatePromptSchemeTemplate("system-default", "tags", "自定义标签提示词");
+    expect(repo.getPromptScheme("system-default")!.templates.find((row) => row.key === "tags")?.template).toBe("自定义标签提示词");
+    repo.updatePromptSchemeTemplate("system-default", "cover", "自定义封面提示词");
+    expect(repo.getPromptScheme("system-default")!.templates.find((row) => row.key === "cover")?.template).toBe("自定义封面提示词");
+    repo.detachNovelPromptScheme(novel.id);
+    repo.updateTemplate(novel.id, "tags", "本书标签提示词");
+    expect(repo.getNovelWorkspace(novel.id)!.templates.find((row) => row.key === "tags")?.template).toBe("本书标签提示词");
   });
 });

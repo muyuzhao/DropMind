@@ -6,6 +6,7 @@ export const AUTOMATIC_CONTEXT_LABELS: Record<StepKey, string[]> = {
   settings: ["已选选题", "分卷大纲"],
   units: ["本卷大纲", "当前十章范围"],
   outlines: ["当前十章剧情单元", "当前十章范围"],
+  tags: ["书名", "简介"],
   drafts: ["当前任务.md", "本地资料目录", "上一章正文文件"],
 };
 

@@ -1,8 +1,9 @@
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
-import { stepKeyValues, type ChapterStatus, type StepKey } from "../../lib/novel-db/schema";
+import { promptTemplateKeyValues, type ChapterStatus, type PromptTemplateKey, type StepKey } from "../../lib/novel-db/schema";
 import { getNovelSqlite } from "../../lib/novel-db";
 import { stripLegacyPlaceholders } from "./structured-prompts";
+import { DEFAULT_PROMPT_TEMPLATES } from "./templates";
 import type { NovelBackupWorkspace } from "./backup";
 import type { ChapterData, ChapterOutlineData, ContentVersionData, NovelData, NovelListItem, NovelStepData, NovelWorkspaceData, PromptSchemeData, PromptSchemeSummary, PromptTemplateData, StoryUnitData, VersionedContentType } from "./types";
 
@@ -22,6 +23,14 @@ export function createNovelRepository(sqlite: Database.Database) {
     const row = sqlite.prepare(sql).get(...args) as Row | undefined;
     return row ? camel(row) as T : null;
   };
+  const ensureSchemePublishTemplates = (schemeId: string) => {
+    const insert = sqlite.prepare("insert or ignore into prompt_scheme_templates (id,scheme_id,key,template,created_at,updated_at) values (?,?,?,?,?,?)");
+    for (const key of ["tags", "cover"] as const) insert.run(randomUUID(), schemeId, key, DEFAULT_PROMPT_TEMPLATES[key], now(), now());
+  };
+  const ensureNovelPublishTemplates = (novelId: string) => {
+    const insert = sqlite.prepare("insert or ignore into prompt_templates (id,novel_id,key,template,created_at,updated_at) values (?,?,?,?,?,?)");
+    for (const key of ["tags", "cover"] as const) insert.run(randomUUID(), novelId, key, DEFAULT_PROMPT_TEMPLATES[key], now(), now());
+  };
 
   function versionPrevious(novelId: string, contentType: VersionedContentType, contentKey: string, table: string, where: string, args: unknown[], nextContent: string, contentColumn = "content") {
     const previous = sqlite.prepare(`select ${contentColumn} content from ${table} where ${where}`).get(...args) as { content: string } | undefined;
@@ -37,8 +46,9 @@ export function createNovelRepository(sqlite: Database.Database) {
       const timestamp = now();
       sqlite.transaction(() => {
         const chosen = schemeId ?? String((sqlite.prepare("select id from prompt_schemes where is_default=1 limit 1").get() as {id:string}|undefined)?.id ?? "system-default");
+        ensureSchemePublishTemplates(chosen);
         const source = sqlite.prepare("select key,template from prompt_scheme_templates where scheme_id=?").all(chosen) as Array<{key:string;template:string}>;
-        if (source.length !== 6) throw new Error("提示词方案不完整");
+        if (source.length !== promptTemplateKeyValues.length) throw new Error("提示词方案不完整");
         sqlite.prepare("insert into novels (id, name, reference_title, reference_summary, prompt_scheme_id, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?)")
           .run(id, input.name, input.referenceTitle, input.referenceSummary, chosen, timestamp, timestamp);
         const insert = sqlite.prepare("insert into prompt_templates (id, novel_id, key, template, created_at, updated_at) values (?, ?, ?, ?, ?, ?)");
@@ -93,24 +103,26 @@ export function createNovelRepository(sqlite: Database.Database) {
     },
 
     getNovel(id: string) { return one<NovelRecord>("select * from novels where id = ?", id); },
-    getTemplates(novelId: string) { return all<PromptTemplateData>("select * from prompt_templates where novel_id = ? order by created_at", novelId); },
+    getTemplates(novelId: string) { ensureNovelPublishTemplates(novelId); return all<PromptTemplateData>("select * from prompt_templates where novel_id = ? order by created_at", novelId); },
     listPromptSchemes() { return all<PromptSchemeSummary>("select * from prompt_schemes order by is_default desc,updated_at desc"); },
-    getPromptScheme(id: string): PromptSchemeData | null { const scheme=one<PromptSchemeSummary>("select * from prompt_schemes where id=?",id); return scheme ? {...scheme,templates:all<PromptTemplateData>("select * from prompt_scheme_templates where scheme_id=? order by created_at",id)} : null; },
+    getPromptScheme(id: string): PromptSchemeData | null { const scheme=one<PromptSchemeSummary>("select * from prompt_schemes where id=?",id); if(!scheme) return null; ensureSchemePublishTemplates(id); return {...scheme,templates:all<PromptTemplateData>("select * from prompt_scheme_templates where scheme_id=? order by created_at",id)}; },
     createPromptScheme(input: {name:string;description:string;sourceSchemeId?:string}) {
       const id=randomUUID(), timestamp=now(), source=input.sourceSchemeId??"system-default";
+      ensureSchemePublishTemplates(source);
       sqlite.transaction(()=>{ sqlite.prepare("insert into prompt_schemes (id,name,description,is_system,is_default,created_at,updated_at) values (?,?,?,?,?,?,?)").run(id,input.name,input.description,0,0,timestamp,timestamp);
         const rows=sqlite.prepare("select key,template from prompt_scheme_templates where scheme_id=?").all(source) as Array<{key:string;template:string}>;
-        if (rows.length !== stepKeyValues.length) throw new Error("来源提示词方案不存在或不完整");
+        if (rows.length !== promptTemplateKeyValues.length) throw new Error("来源提示词方案不存在或不完整");
         const ins=sqlite.prepare("insert into prompt_scheme_templates (id,scheme_id,key,template,created_at,updated_at) values (?,?,?,?,?,?)"); for(const row of rows) ins.run(randomUUID(),id,row.key,row.template,timestamp,timestamp); })(); return one<{id:string}&Row>("select * from prompt_schemes where id=?",id)!;
     },
     updatePromptScheme(id:string, patch:{name:string;description:string}) { const result=sqlite.prepare("update prompt_schemes set name=?,description=?,updated_at=? where id=?").run(patch.name,patch.description,now(),id); if(!result.changes) throw new Error("提示词方案不存在"); },
-    updatePromptSchemeTemplate(id:string,key:StepKey,template:string){ const result=sqlite.prepare("update prompt_scheme_templates set template=?,updated_at=? where scheme_id=? and key=?").run(stripLegacyPlaceholders(template),now(),id,key); if(!result.changes) throw new Error("提示词方案或模板不存在"); },
+    updatePromptSchemeTemplate(id:string,key:PromptTemplateKey,template:string){ if(key === "tags" || key === "cover") ensureSchemePublishTemplates(id); const result=sqlite.prepare("update prompt_scheme_templates set template=?,updated_at=? where scheme_id=? and key=?").run(stripLegacyPlaceholders(template),now(),id,key); if(!result.changes) throw new Error("提示词方案或模板不存在"); },
     setDefaultPromptScheme(id:string){ sqlite.transaction(()=>{const target=sqlite.prepare("select 1 from prompt_schemes where id=?").get(id);if(!target) throw new Error("提示词方案不存在");sqlite.prepare("update prompt_schemes set is_default=0").run();sqlite.prepare("update prompt_schemes set is_default=1 where id=?").run(id);})(); },
     deletePromptScheme(id:string){ const row=sqlite.prepare("select is_system,is_default from prompt_schemes where id=?").get(id) as {is_system:number;is_default:number}|undefined; if(!row) return; if(row.is_system) throw new Error("系统方案不可删除"); if(row.is_default) throw new Error("默认方案不可删除"); const linked=(sqlite.prepare("select count(*) count from novels where prompt_scheme_id=?").get(id) as {count:number}).count; if(linked) throw new Error(`仍有${linked}本小说正在跟随该方案`); sqlite.prepare("delete from prompt_schemes where id=?").run(id); },
 
     setNovelPromptScheme(novelId: string, schemeId: string) {
+      ensureSchemePublishTemplates(schemeId);
       const count = (sqlite.prepare("select count(*) count from prompt_scheme_templates where scheme_id=?").get(schemeId) as { count: number }).count;
-      if (count !== stepKeyValues.length) throw new Error("提示词方案不存在或不完整");
+      if (count !== promptTemplateKeyValues.length) throw new Error("提示词方案不存在或不完整");
       const result = sqlite.prepare("update novels set prompt_scheme_id=?,updated_at=? where id=?").run(schemeId, now(), novelId);
       if (!result.changes) throw new Error("小说不存在");
     },
@@ -119,8 +131,9 @@ export function createNovelRepository(sqlite: Database.Database) {
       const novel = sqlite.prepare("select prompt_scheme_id from novels where id=?").get(novelId) as { prompt_scheme_id: string | null } | undefined;
       if (!novel) throw new Error("小说不存在");
       if (!novel.prompt_scheme_id) return;
-      const templates = sqlite.prepare("select key,template from prompt_scheme_templates where scheme_id=?").all(novel.prompt_scheme_id) as Array<{ key: StepKey; template: string }>;
-      if (templates.length !== stepKeyValues.length) throw new Error("提示词方案不完整");
+      ensureSchemePublishTemplates(novel.prompt_scheme_id);
+      const templates = sqlite.prepare("select key,template from prompt_scheme_templates where scheme_id=?").all(novel.prompt_scheme_id) as Array<{ key: PromptTemplateKey; template: string }>;
+      if (templates.length !== promptTemplateKeyValues.length) throw new Error("提示词方案不完整");
       sqlite.transaction(() => {
         const timestamp = now();
         const upsert = sqlite.prepare(`insert into prompt_templates (id,novel_id,key,template,created_at,updated_at) values (?,?,?,?,?,?)
@@ -134,6 +147,7 @@ export function createNovelRepository(sqlite: Database.Database) {
       const novel = one("select * from novels where id = ?", id);
       if (!novel) return null;
       const schemeId = novel.promptSchemeId ? String(novel.promptSchemeId) : null;
+      if (schemeId) ensureSchemePublishTemplates(schemeId); else ensureNovelPublishTemplates(id);
       const scheme = schemeId ? one<Pick<PromptSchemeSummary, "id" | "name">>("select id,name from prompt_schemes where id=?", schemeId) : null;
       return {
         novel: novel as NovelData,
@@ -235,6 +249,31 @@ export function createNovelRepository(sqlite: Database.Database) {
       })();
     },
 
+    importAutomatedChapters(input: { novelId: string; chapters: Array<{ chapterNumber: number; content: string; expectedUpdatedAt: number | null; expectedDatabaseContent: string }> }) {
+      return sqlite.transaction(() => {
+        const rows = input.chapters.map((chapter) => {
+          const current = sqlite.prepare("select content,status,updated_at from chapters where novel_id=? and chapter_number=?")
+            .get(input.novelId, chapter.chapterNumber) as { content: string; status: ChapterStatus; updated_at: number } | undefined;
+          if ((current?.content ?? "") === chapter.content) return { chapter, current, changed: false };
+          if ((current?.updated_at ?? null) !== chapter.expectedUpdatedAt || (current?.content ?? "") !== chapter.expectedDatabaseContent) {
+            throw new Error(`第${chapter.chapterNumber}章已在任务创建后被修改，请新建正文生成任务`);
+          }
+          if (current?.status === "published") throw new Error(`第${chapter.chapterNumber}章已经发布，不能由自动任务覆盖`);
+          return { chapter, current, changed: true };
+        });
+        const changedRows = rows.filter((row) => row.changed);
+        for (const { chapter } of changedRows) {
+          versionPrevious(input.novelId, "chapter", String(chapter.chapterNumber), "chapters", "novel_id=? and chapter_number=?", [input.novelId, chapter.chapterNumber], chapter.content);
+          const timestamp = now();
+          sqlite.prepare(`insert into chapters (id,novel_id,chapter_number,content,status,is_draft,created_at,updated_at)
+            values (?,?,?,?,?,?,?,?) on conflict(novel_id,chapter_number) do update set content=excluded.content,status=excluded.status,is_draft=excluded.is_draft,updated_at=excluded.updated_at`)
+            .run(randomUUID(), input.novelId, chapter.chapterNumber, chapter.content, "saved", 0, timestamp, timestamp);
+        }
+        if (changedRows.length) touch(input.novelId);
+        return changedRows.length;
+      })();
+    },
+
     importAutomationNode(input: { novelId: string; kind: "volumes" | "settings" | "units" | "outlines"; startChapter: number | null; content: string; firstVolumeOutline?: string }) {
       sqlite.transaction(() => {
         const timestamp = now();
@@ -281,7 +320,8 @@ export function createNovelRepository(sqlite: Database.Database) {
       touch(novelId);
     },
 
-    updateTemplate(novelId: string, key: StepKey, template: string) {
+    updateTemplate(novelId: string, key: PromptTemplateKey, template: string) {
+      if (key === "tags" || key === "cover") ensureNovelPublishTemplates(novelId);
       const content = stripLegacyPlaceholders(template);
       sqlite.transaction(() => {
         versionPrevious(novelId, "template", key, "prompt_templates", "novel_id=? and key=?", [novelId, key], content, "template");
@@ -307,7 +347,7 @@ export function createNovelRepository(sqlite: Database.Database) {
           this.saveChapter(novelId, chapterNumber, version.content, current?.status === "published" ? "published" : "saved", false);
           break;
         }
-        case "template": this.updateTemplate(novelId, version.contentKey as StepKey, version.content); break;
+        case "template": this.updateTemplate(novelId, version.contentKey as PromptTemplateKey, version.content); break;
         default: throw new Error("不支持的历史版本类型");
       }
       return version;

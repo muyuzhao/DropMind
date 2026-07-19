@@ -71,7 +71,7 @@ export type AutomationControl = {
   requestedAt: string;
 };
 
-type AutomationOptions = { rootDir?: string; now?: () => Date };
+type AutomationOptions = { rootDir?: string; now?: () => Date; novelName?: string };
 type AutomationImporter = {
   importAutomationNode(input: { novelId: string; kind: AutomationNodeKind; startChapter: number | null; content: string; firstVolumeOutline?: string }): void;
 };
@@ -509,8 +509,70 @@ function cmdScript() {
   return "@echo off\r\nsetlocal\r\npowershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File \"%~dp0run-pipeline.ps1\"\r\nset EXIT_CODE=%ERRORLEVEL%\r\necho.\r\necho Exit code: %EXIT_CODE%\r\npause\r\nexit /b %EXIT_CODE%\r\n";
 }
 
+export function automationRunnerDefinition(runDir: string) {
+  return {
+    command: `powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "${path.join(runDir, "run-pipeline.ps1")}"`,
+    cliInvocation: "codex exec -C <run-dir> --sandbox read-only --skip-git-repo-check -c model_reasoning_effort=medium --json --output-last-message <temp-output> -",
+    proofStatus: "unavailable" as const,
+    scriptVersion: AUTOMATION_RUNNER_VERSION,
+  };
+}
+
+export function writeAutomationRunnerFiles(runDir: string) {
+  atomicWrite(path.join(runDir, "run-pipeline.ps1"), `\uFEFF${runnerScript()}`);
+  atomicWrite(path.join(runDir, "run-pipeline.cmd"), cmdScript());
+}
+
 function runId(now: Date) {
   return `${now.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z")}-${randomUUID().slice(0, 8)}`;
+}
+
+function formalContent(row: { content?: unknown; isDraft?: unknown } | undefined) {
+  return row && !Boolean(row.isDraft) ? String(row.content ?? "").trim() : "";
+}
+
+function existingAutomationNodeContent(workspace: NovelWorkspaceData, node: AutomationNode) {
+  if (node.kind === "volumes" || node.kind === "settings") {
+    return formalContent(workspace.steps.find((row) => row.key === node.kind));
+  }
+  if (node.startChapter === null) return "";
+  if (node.kind === "units") return formalContent(workspace.storyUnits.find((row) => Number(row.startChapter) === node.startChapter));
+  const rows = workspace.chapterOutlines.filter((row) => Number(row.chapterNumber) >= node.startChapter! && Number(row.chapterNumber) <= node.endChapter!);
+  if (rows.length !== 10 || rows.some((row) => !formalContent(row))) return "";
+  return formalContent(rows.find((row) => Number(row.chapterNumber) === node.startChapter));
+}
+
+export function seedAutomationRunFromWorkspace(runDir: string, manifest: AutomationManifest, workspace: NovelWorkspaceData, options: AutomationOptions = {}) {
+  if (String(workspace.novel.id) !== manifest.novelId) throw new Error("任务与当前小说不匹配");
+  const clean = ["pending", "paused"].includes(manifest.status)
+    && manifest.nodes.every((node) => node.attempts === 0 && !node.imported && (node.status === "pending" || node.status === "paused"));
+  if (!clean) return 0;
+
+  manifest.snapshot = snapshotFor(workspace);
+  updateManifestInputSummary(manifest);
+  writeNodeInputs(runDir, manifest);
+  let seededCount = 0;
+  for (const node of manifest.nodes) {
+    const content = existingAutomationNodeContent(workspace, node);
+    if (!content) break;
+    atomicWrite(path.join(runDir, node.outputPath), `${content}\n`);
+    node.status = "completed";
+    node.imported = true;
+    node.importedHash = hash(content);
+    node.completedAt = manifest.createdAt;
+    node.lastDurationSeconds = 0;
+    node.failureReason = null;
+    seededCount += 1;
+  }
+  const seededLabels = manifest.nodes.slice(0, seededCount).map((node) => `- ${node.label}`).join("\n");
+  atomicWrite(path.join(runDir, manifest.continuityPath), seededCount
+    ? `# 连续性记录\n\n## 从工作台正式内容接续\n\n以下节点沿用已确认内容；下游节点应读取对应 outputs 文件核对原文：\n\n${seededLabels}\n`
+    : "# 连续性记录\n");
+  manifest.status = seededCount === manifest.nodes.length ? "completed" : manifest.status;
+  manifest.currentNode = null;
+  manifest.failureReason = null;
+  saveManifest(runDir, manifest, options);
+  return seededCount;
 }
 
 export function createAutomationRun(workspace: NovelWorkspaceData, options: AutomationOptions = {}) {
@@ -558,12 +620,7 @@ export function createAutomationRun(workspace: NovelWorkspaceData, options: Auto
     snapshot,
     nodes,
     continuityPath: "outputs/continuity.md",
-    runner: {
-      command: `powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "${path.join(runDir, "run-pipeline.ps1")}"`,
-      cliInvocation: "codex exec -C <run-dir> --sandbox read-only --skip-git-repo-check -c model_reasoning_effort=medium --json --output-last-message <temp-output> -",
-      proofStatus: "unavailable",
-      scriptVersion: AUTOMATION_RUNNER_VERSION,
-    },
+    runner: automationRunnerDefinition(runDir),
     failureReason: null,
   };
   const control: AutomationControl = { action: "run", mode: "all", targetNodeId: null, requestedAt: createdAt };
@@ -575,16 +632,25 @@ export function createAutomationRun(workspace: NovelWorkspaceData, options: Auto
   nodes.forEach((node, index) => atomicWrite(path.join(runDir, node.inputPath), prompts[index]));
   atomicWrite(path.join(runDir, "outputs", "continuity.md"), "# 连续性记录\n");
   // Windows PowerShell 5.1 needs a BOM to parse non-ASCII script literals reliably.
-  atomicWrite(path.join(runDir, "run-pipeline.ps1"), `\uFEFF${runnerScript()}`);
-  atomicWrite(path.join(runDir, "run-pipeline.cmd"), cmdScript());
+  writeAutomationRunnerFiles(runDir);
   writeJson(path.join(runDir, "control.json"), control);
   writeJson(path.join(runDir, "manifest.json"), manifest);
-  return { runDir, manifest, control };
+  const seededCount = seedAutomationRunFromWorkspace(runDir, manifest, workspace, options);
+  return { runDir, manifest, control, seededCount };
 }
 
 export function refreshAutomationRunnerFiles(runDir: string, manifest: AutomationManifest, options: AutomationOptions = {}) {
   if (manifest.status === "running") return false;
   let changed = false;
+  const runnerCommand = automationRunnerDefinition(runDir).command;
+  if (manifest.runner.command !== runnerCommand) {
+    manifest.runner.command = runnerCommand;
+    changed = true;
+  }
+  if (options.novelName !== undefined && manifest.novelName !== options.novelName) {
+    manifest.novelName = options.novelName;
+    changed = true;
+  }
   for (const node of manifest.nodes) {
     if (Object.prototype.hasOwnProperty.call(node, "lastDurationSeconds")) continue;
     node.lastDurationSeconds = durationSeconds(node.startedAt, node.completedAt ?? manifest.updatedAt);
@@ -614,8 +680,7 @@ export function refreshAutomationRunnerFiles(runDir: string, manifest: Automatio
     }
   });
   if (manifest.runner.scriptVersion !== AUTOMATION_RUNNER_VERSION) {
-    atomicWrite(path.join(runDir, "run-pipeline.ps1"), `\uFEFF${runnerScript()}`);
-    atomicWrite(path.join(runDir, "run-pipeline.cmd"), cmdScript());
+    writeAutomationRunnerFiles(runDir);
     manifest.runner.scriptVersion = AUTOMATION_RUNNER_VERSION;
     manifest.runner.cliInvocation = "codex exec -C <run-dir> --sandbox read-only --skip-git-repo-check -c model_reasoning_effort=medium --json --output-last-message <temp-output> -";
     changed = true;

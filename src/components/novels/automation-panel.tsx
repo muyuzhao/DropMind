@@ -15,7 +15,14 @@ const STATUS_LABELS: Record<string, string> = {
   terminated: "已终止",
 };
 
-type RunView = { runDir: string; manifest: AutomationManifest; importedCount?: number };
+type RunView = { runDir: string; manifest: AutomationManifest; importedCount?: number; seededCount?: number };
+
+function seededMessage(manifest: AutomationManifest, seededCount: number) {
+  const next = manifest.nodes[seededCount];
+  return next
+    ? `已沿用工作台前 ${seededCount} 个正式节点，将从“${next.label}”继续生成。`
+    : "第 2–5 步已经全部完成，无需重复生成。";
+}
 
 function elapsedLabel(startedAt: string, now: number) {
   const elapsedSeconds = Math.max(0, Math.floor((now - new Date(startedAt).getTime()) / 1000));
@@ -48,7 +55,7 @@ export function AutomationPanel({ novelId, onReturnManual }: { novelId: string; 
     if (result.run?.importedCount) {
       setMessage(`已校验并导入 ${result.run.importedCount} 个新节点`);
       router.refresh();
-    }
+    } else if (result.run?.seededCount) setMessage(seededMessage(result.run.manifest, result.run.seededCount));
   }, [novelId, router]);
 
   useEffect(() => {
@@ -84,8 +91,8 @@ export function AutomationPanel({ novelId, onReturnManual }: { novelId: string; 
     const result = await createAutomationRunAction(novelId);
     setLoading(false);
     if (!result.ok) { setMessage(result.error); return; }
-    setRun({ runDir: result.runDir, manifest: result.manifest });
-    setMessage("任务已创建。双击 run-pipeline.cmd，或复制 PowerShell 命令运行。浏览器可以关闭。");
+    setRun({ runDir: result.runDir, manifest: result.manifest, seededCount: result.seededCount });
+    setMessage(result.seededCount ? seededMessage(result.manifest, result.seededCount) : "任务已创建。双击 run-pipeline.cmd，或复制 PowerShell 命令运行。浏览器可以关闭。");
   }
 
   async function control(action: "run" | "pause" | "terminate" | "retry", node?: AutomationNode) {

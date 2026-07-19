@@ -16,6 +16,7 @@ import {
     reconcileAutomationStaleness,
     recoverInterruptedAutomationRun,
     refreshAutomationRunnerFiles,
+    seedAutomationRunFromWorkspace,
   requestAutomationControl,
   restartAutomationFromNode,
   validateAutomationOutput,
@@ -59,6 +60,13 @@ describe("Codex automated workflow", () => {
     fs.writeFileSync(path.join(runDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   }
 
+  function saveManualPlanningPrefix(outlineBatchCount = 2) {
+    repo.saveStep(novelId, "volumes", "手工确认的分卷大纲", false);
+    repo.saveStep(novelId, "settings", "手工确认的核心设定", false);
+    for (const start of [1, 11, 21, 31, 41, 51]) repo.saveStoryUnit(novelId, start, `手工剧情单元 ${start}-${start + 9}`, false);
+    for (const start of [1, 11].slice(0, outlineBatchCount)) repo.saveChapterOutlineBatch(novelId, start, `手工分章大纲 ${start}-${start + 9}`, false);
+  }
+
   it("creates an isolated task directory with the exact 14-node order", () => {
     const result = createRun();
 
@@ -90,6 +98,43 @@ describe("Codex automated workflow", () => {
     expect(result.manifest.runner.cliInvocation).toContain("--json");
     expect(result.manifest.runner.cliInvocation).toContain("model_reasoning_effort=medium");
     expect(getLatestAutomationRun(repo.getNovelWorkspace(novelId)!, { rootDir })?.manifest.runId).toBe(result.manifest.runId);
+  });
+
+  it("continues from a contiguous prefix of manually confirmed planning content", () => {
+    saveManualPlanningPrefix(2);
+    const result = createRun();
+
+    expect(result.seededCount).toBe(10);
+    expect(result.manifest.nodes.slice(0, 10).every((node) => node.status === "completed" && node.imported && node.attempts === 0)).toBe(true);
+    expect(result.manifest.nodes.slice(10).every((node) => node.status === "pending" && !node.imported)).toBe(true);
+    expect(fs.readFileSync(path.join(result.runDir, result.manifest.nodes[8].outputPath), "utf8")).toContain("手工分章大纲 1-10");
+    expect(fs.readFileSync(path.join(result.runDir, "outputs", "continuity.md"), "utf8")).toContain("分章大纲 11–20");
+  });
+
+  it("stops seeding at the first planning gap even when later formal content exists", () => {
+    repo.saveStep(novelId, "volumes", "手工分卷", false);
+    repo.saveStep(novelId, "settings", "手工设定", false);
+    repo.saveStoryUnit(novelId, 1, "手工剧情 1-10", false);
+    repo.saveStoryUnit(novelId, 21, "手工剧情 21-30", false);
+    const result = createRun();
+
+    expect(result.seededCount).toBe(3);
+    expect(result.manifest.nodes[2]).toMatchObject({ id: "units-1", status: "completed", imported: true });
+    expect(result.manifest.nodes[3]).toMatchObject({ id: "units-11", status: "pending", imported: false });
+    expect(result.manifest.nodes[4]).toMatchObject({ id: "units-21", status: "pending", imported: false });
+  });
+
+  it("upgrades an already-created but unstarted task to the current manual progress", () => {
+    const result = createRun();
+    repo.saveStep(novelId, "volumes", "任务创建后确认的分卷", false);
+    repo.saveStep(novelId, "settings", "任务创建后确认的设定", false);
+    repo.saveStoryUnit(novelId, 1, "任务创建后确认的剧情单元", false);
+
+    expect(seedAutomationRunFromWorkspace(result.runDir, result.manifest, repo.getNovelWorkspace(novelId)!)).toBe(3);
+    const upgraded = readAutomationManifest(result.runDir);
+    expect(upgraded.nodes.slice(0, 3).every((node) => node.status === "completed" && node.imported)).toBe(true);
+    expect(upgraded.snapshot.stepContent.settings).toBe("任务创建后确认的设定");
+    expect(fs.readFileSync(path.join(result.runDir, upgraded.nodes[2].outputPath), "utf8")).toContain("任务创建后确认的剧情单元");
   });
 
   it("runs one node through a fake CLI, retries once after failure, and pauses", () => {
@@ -316,6 +361,8 @@ describe("Codex automated workflow", () => {
     const result = createAutomationRun(repo.getNovelWorkspace(novelId)!, { rootDir });
     const node = result.manifest.nodes[0];
     node.status = "completed";
+    node.imported = false;
+    node.importedHash = null;
     fs.writeFileSync(path.join(result.runDir, node.outputPath), volumeOutput("新版"), "utf8");
     saveManifest(result.runDir, result.manifest);
 
