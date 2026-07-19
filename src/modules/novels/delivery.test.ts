@@ -25,28 +25,28 @@ describe("fanqie delivery repository", () => {
 
   it("stores a target and queues an immutable chapter snapshot", () => {
     const novel = savedChapter();
-    const queued = delivery.queueChapter(novel.id, 1);
+    const queued = delivery.queueChapter(novel.id, 1, "2026-07-20");
     const state = delivery.getNovelState(novel.id);
 
     expect(state.target).toMatchObject({ bookName: "番茄作品", defaultVolume: "第一卷" });
-    expect(queued).toMatchObject({ chapterNumber: 1, chapterTitle: "初入王府", contentLength: 5, status: "ready" });
-    expect(delivery.queueChapter(novel.id, 1).id).toBe(queued.id);
+    expect(queued).toMatchObject({ chapterNumber: 1, chapterTitle: "初入王府", publishDate: "2026-07-20", contentLength: 5, status: "ready" });
+    expect(delivery.queueChapter(novel.id, 1, "2026-07-20").id).toBe(queued.id);
   });
 
   it("claims, fills and submits a queued chapter with the extension token", () => {
     const novel = savedChapter();
-    delivery.queueChapter(novel.id, 1);
+    delivery.queueChapter(novel.id, 1, "2026-07-20");
     const token = delivery.getNovelState(novel.id).connectionToken;
     const claimed = delivery.claimNext(token)!;
 
-    expect(claimed).toMatchObject({ novelName: "测试作品", chapterContent: "第一章正文", status: "claimed" });
+    expect(claimed).toMatchObject({ novelName: "测试作品", chapterContent: "第一章正文", publishDate: "2026-07-20", status: "claimed" });
     expect(delivery.updateFromExtension(token, claimed.id, "filled").status).toBe("filled");
     expect(delivery.updateFromExtension(token, claimed.id, "submitted").status).toBe("submitted");
   });
 
   it("marks a queued snapshot stale when the chapter changes", () => {
     const novel = savedChapter();
-    delivery.queueChapter(novel.id, 1);
+    delivery.queueChapter(novel.id, 1, "2026-07-20");
     novels.saveChapter(novel.id, 1, "修改后的正文", "saved", false, "新标题");
     const token = delivery.getNovelState(novel.id).connectionToken;
 
@@ -56,17 +56,34 @@ describe("fanqie delivery repository", () => {
 
   it("rejects an invalid extension token", () => {
     const novel = savedChapter();
-    delivery.queueChapter(novel.id, 1);
+    delivery.queueChapter(novel.id, 1, "2026-07-20");
     expect(() => delivery.claimNext("wrong-token")).toThrow("投递连接令牌无效");
   });
 
   it("keeps submitted jobs separate from the chapter published status", () => {
     const novel = savedChapter();
-    delivery.queueChapter(novel.id, 1);
+    delivery.queueChapter(novel.id, 1, "2026-07-20");
     const token = delivery.getNovelState(novel.id).connectionToken;
     const claimed = delivery.claimNext(token)!;
     delivery.updateFromExtension(token, claimed.id, "submitted");
 
     expect(novels.getNovelWorkspace(novel.id)!.chapters[0].status).toBe("saved");
+  });
+
+  it("updates a queued chapter date before the extension claims it", () => {
+    const novel = savedChapter();
+    const queued = delivery.queueChapter(novel.id, 1, "2026-07-20");
+
+    const updated = delivery.queueChapter(novel.id, 1, "2026-07-21");
+
+    expect(updated).toMatchObject({ id: queued.id, publishDate: "2026-07-21", status: "ready" });
+  });
+
+  it("does not change the date after the extension claims a chapter", () => {
+    const novel = savedChapter();
+    delivery.queueChapter(novel.id, 1, "2026-07-20");
+    delivery.claimNext(delivery.getNovelState(novel.id).connectionToken);
+
+    expect(() => delivery.queueChapter(novel.id, 1, "2026-07-21")).toThrow("扩展已经领取本章");
   });
 });

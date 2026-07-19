@@ -173,7 +173,7 @@ export async function saveDeliveryTargetAction(input: unknown) {
 export async function queueChapterDeliveryAction(input: unknown) {
   try {
     const value = queueDeliverySchema.parse(input);
-    const job = deliveryRepository.queueChapter(value.novelId, value.chapterNumber);
+    const job = deliveryRepository.queueChapter(value.novelId, value.chapterNumber, value.publishDate);
     revalidatePath(`/novels/${value.novelId}`);
     return { ok: true as const, job };
   } catch (error) { return failure(error); }

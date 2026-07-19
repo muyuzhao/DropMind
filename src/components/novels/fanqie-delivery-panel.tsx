@@ -20,6 +20,15 @@ function replaceJob(state: NovelDeliveryState, job: DeliveryJobData) {
   return { ...state, jobs: [...jobs, job].sort((left, right) => left.chapterNumber - right.chapterNumber) };
 }
 
+function tomorrowDate() {
+  const date = new Date();
+  date.setDate(date.getDate() + 1);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 export function FanqieDeliveryPanel({ mode, novelId, novelName, chapterNumber, chapterTitle, chapterContent, chapterDirty, initialState, extensionDirectory }: {
   mode: "setup" | "chapter";
   novelId: string;
@@ -35,10 +44,14 @@ export function FanqieDeliveryPanel({ mode, novelId, novelName, chapterNumber, c
   const [state, setState] = useState(initialState);
   const [bookName, setBookName] = useState(initialState.target?.bookName ?? novelName);
   const [manageUrl, setManageUrl] = useState(initialState.target?.manageUrl ?? "https://fanqienovel.com/main/writer/book-manage");
+  const initialJob = initialState.jobs.find((job) => job.chapterNumber === chapterNumber);
+  const [publishDate, setPublishDate] = useState(initialJob ? initialJob.publishDate : tomorrowDate());
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
 
   const currentJob = useMemo(() => state.jobs.find((job) => job.chapterNumber === chapterNumber) ?? null, [chapterNumber, state.jobs]);
+  const earliestPublishDate = tomorrowDate();
+  const scheduleLocked = Boolean(currentJob && ["claimed", "filled", "submitted"].includes(currentJob.status));
 
   async function copy(value: string, success: string) {
     try { await navigator.clipboard.writeText(value); setMessage(success); }
@@ -67,7 +80,7 @@ export function FanqieDeliveryPanel({ mode, novelId, novelName, chapterNumber, c
   async function queue() {
     if (chapterDirty) { setMessage("请先保存当前标题和正文，再加入投递队列"); return; }
     setBusy("queue"); setMessage("");
-    const result = await queueChapterDeliveryAction({ novelId, chapterNumber });
+    const result = await queueChapterDeliveryAction({ novelId, chapterNumber, publishDate });
     setBusy("");
     if (!result.ok) { setMessage(result.error); return; }
     setState((current) => replaceJob(current, result.job));
@@ -98,12 +111,15 @@ export function FanqieDeliveryPanel({ mode, novelId, novelName, chapterNumber, c
     {message && <div className="automation-message">{message}</div>}
   </section>;
 
-  const canQueue = Boolean(state.target && chapterTitle.trim() && chapterContent.trim() && !chapterDirty && currentJob?.status !== "submitted");
+  const canQueue = Boolean(state.target && chapterTitle.trim() && chapterContent.trim() && !chapterDirty && publishDate >= earliestPublishDate && currentJob?.status !== "submitted");
   return <section className="fanqie-delivery-panel chapter-delivery-panel">
     <div className="panel-title"><div><p className="novel-kicker">番茄单章投递</p><h3>第 {chapterNumber} 章《{chapterTitle || "未命名"}》</h3></div>{currentJob && <span className={`delivery-status ${currentJob.status}`}>{statusLabels[currentJob.status]}</span>}</div>
     {!state.target ? <p className="delivery-warning">尚未绑定番茄作品，请先到第6步“发布准备”完成绑定和扩展连接。</p> : <p className="delivery-explanation">目标作品：{state.target.bookName}。队列保存的是当前正式版本；本地未保存修改不会被投递。</p>}
     {currentJob?.lastError && <p className="delivery-warning">{currentJob.lastError}</p>}
+    <div className="delivery-schedule"><label>发布日期<input type="date" min={earliestPublishDate} value={publishDate} disabled={scheduleLocked} onChange={(event) => setPublishDate(event.target.value)} /></label><span><strong>12:00</strong> 固定发布</span>{scheduleLocked && <small>扩展已领取后不能修改日期</small>}</div>
     <div className="delivery-actions"><button type="button" disabled={!canQueue || busy === "queue"} onClick={() => void queue()}>{busy === "queue" ? "加入中…" : currentJob && ["failed", "stale", "cancelled"].includes(currentJob.status) ? "重新加入队列" : currentJob ? "更新投递任务" : "投递到番茄"}</button>{state.target && <a className="button-link" href={state.target.manageUrl} target="_blank" rel="noreferrer">打开番茄后台</a>}<button type="button" className="button-secondary" disabled={busy === "refresh"} onClick={() => void refresh()}>{busy === "refresh" ? "刷新中…" : "刷新投递状态"}</button>{currentJob && !["submitted", "cancelled"].includes(currentJob.status) && <button type="button" className="button-quiet" disabled={busy === "cancel"} onClick={() => void cancel()}>取消任务</button>}</div>
+    {!scheduleLocked && publishDate < earliestPublishDate && <p className="delivery-warning">发布日期至少选择明天。</p>}
+    {scheduleLocked && !publishDate && currentJob?.status !== "submitted" && <p className="delivery-warning">这是升级前领取的任务，没有发布日期；请取消后重新选择日期加入队列。</p>}
     {chapterDirty && <p className="delivery-warning">当前标题或正文尚未保存，保存后才能投递。</p>}
     {message && <div className="automation-message">{message}</div>}
   </section>;

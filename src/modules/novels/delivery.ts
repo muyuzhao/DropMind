@@ -24,6 +24,7 @@ export type DeliveryJobData = {
   targetBookName: string;
   targetManageUrl: string;
   chapterTitle: string;
+  publishDate: string;
   contentHash: string;
   contentLength: number;
   status: DeliveryJobStatus;
@@ -65,7 +66,7 @@ function jobFromRow(row: Row): DeliveryJobData {
   return {
     id: String(row.id), novelId: String(row.novel_id), chapterNumber: Number(row.chapter_number), platform: "fanqie",
     targetBookName: String(row.target_book_name), targetManageUrl: String(row.target_manage_url), chapterTitle: String(row.chapter_title),
-    contentHash: String(row.content_hash), contentLength: Number(row.content_length ?? String(row.chapter_content ?? "").length),
+    publishDate: String(row.publish_date ?? ""), contentHash: String(row.content_hash), contentLength: Number(row.content_length ?? String(row.chapter_content ?? "").length),
     status: String(row.status) as DeliveryJobStatus, lastError: String(row.last_error ?? ""),
     claimedAt: row.claimed_at === null || row.claimed_at === undefined ? null : Number(row.claimed_at),
     filledAt: row.filled_at === null || row.filled_at === undefined ? null : Number(row.filled_at),
@@ -127,7 +128,7 @@ export function createDeliveryRepository(sqlite: Database.Database) {
       return getTarget(input.novelId)!;
     },
 
-    queueChapter(novelId: string, chapterNumber: number) {
+    queueChapter(novelId: string, chapterNumber: number, publishDate: string) {
       return sqlite.transaction(() => {
         const target = getTarget(novelId);
         if (!target) throw new Error("请先在发布准备中绑定番茄作品");
@@ -137,15 +138,16 @@ export function createDeliveryRepository(sqlite: Database.Database) {
         if (chapter.status === "published") throw new Error("本章已经标记为已发布，不需要再次投递");
         const hash = contentHash(chapter.title, chapter.content);
         const existing = sqlite.prepare("select * from delivery_jobs where novel_id=? and chapter_number=? and platform=?").get(novelId, chapterNumber, "fanqie") as Row | undefined;
-        if (existing && String(existing.content_hash) === hash && ["ready", "claimed", "filled", "submitted"].includes(String(existing.status))) return jobFromRow({ ...existing, content_length: chapter.content.length });
         if (existing && String(existing.status) === "submitted") throw new Error("本章已有提交记录；如需重投，请先确认平台状态并取消旧任务");
+        if (existing && String(existing.content_hash) === hash && String(existing.publish_date ?? "") === publishDate && ["ready", "claimed", "filled"].includes(String(existing.status))) return jobFromRow({ ...existing, content_length: chapter.content.length });
+        if (existing && String(existing.content_hash) === hash && ["claimed", "filled"].includes(String(existing.status))) throw new Error("扩展已经领取本章；如需修改发布日期，请先取消或放弃当前任务");
         const timestamp = now();
         const id = existing ? String(existing.id) : randomUUID();
-        sqlite.prepare(`insert into delivery_jobs (id,novel_id,chapter_number,platform,target_book_name,target_manage_url,chapter_title,chapter_content,content_hash,status,last_error,created_at,updated_at)
-          values (?,?,?,?,?,?,?,?,?,'ready','',?,?) on conflict(novel_id,chapter_number,platform) do update set
+        sqlite.prepare(`insert into delivery_jobs (id,novel_id,chapter_number,platform,target_book_name,target_manage_url,chapter_title,chapter_content,content_hash,publish_date,status,last_error,created_at,updated_at)
+          values (?,?,?,?,?,?,?,?,?,?,'ready','',?,?) on conflict(novel_id,chapter_number,platform) do update set
           target_book_name=excluded.target_book_name,target_manage_url=excluded.target_manage_url,chapter_title=excluded.chapter_title,
-          chapter_content=excluded.chapter_content,content_hash=excluded.content_hash,status='ready',last_error='',claimed_at=null,filled_at=null,submitted_at=null,updated_at=excluded.updated_at`)
-          .run(id, novelId, chapterNumber, "fanqie", target.bookName, target.manageUrl, chapter.title, chapter.content, hash, timestamp, timestamp);
+          chapter_content=excluded.chapter_content,content_hash=excluded.content_hash,publish_date=excluded.publish_date,status='ready',last_error='',claimed_at=null,filled_at=null,submitted_at=null,updated_at=excluded.updated_at`)
+          .run(id, novelId, chapterNumber, "fanqie", target.bookName, target.manageUrl, chapter.title, chapter.content, hash, publishDate, timestamp, timestamp);
         const queued = sqlite.prepare("select *,length(chapter_content) content_length from delivery_jobs where id=?").get(id) as Row;
         return jobFromRow(queued);
       })();

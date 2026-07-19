@@ -34,6 +34,22 @@ describe("initializeNovelDatabase", () => {
       .toMatchObject({ current_range_start: 1, current_chapter: 1 });
   });
 
+  it("adds the publish date column to an existing delivery queue", () => {
+    const sqlite = new Database(":memory:");
+    sqlite.exec(`create table delivery_jobs (
+      id TEXT PRIMARY KEY, novel_id TEXT NOT NULL, chapter_number INTEGER NOT NULL, platform TEXT NOT NULL,
+      target_book_name TEXT NOT NULL, target_manage_url TEXT NOT NULL, chapter_title TEXT NOT NULL,
+      chapter_content TEXT NOT NULL, content_hash TEXT NOT NULL, status TEXT NOT NULL, last_error TEXT NOT NULL DEFAULT '',
+      claimed_at INTEGER, filled_at INTEGER, submitted_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+      UNIQUE(novel_id, chapter_number, platform)
+    )`);
+
+    initializeNovelDatabase(sqlite);
+
+    const columns = sqlite.prepare("pragma table_info(delivery_jobs)").all() as Array<{ name: string }>;
+    expect(columns.map((column) => column.name)).toContain("publish_date");
+  });
+
   it("backs up existing data before adding chapter titles", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "dropmind-title-migration-"));
     const databasePath = path.join(directory, "novels.db");

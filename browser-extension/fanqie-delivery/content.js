@@ -1,10 +1,12 @@
-/* global chrome, DropMindDeliveryFormat */
+/* global chrome, DropMindDeliveryFormat, DropMindFanqiePublisher */
 
 const HOST_ID = "dropmind-fanqie-delivery-host";
 let activeJob = null;
 let minimized = false;
+let publishing = false;
 
 const { normalizeText, escapeHtml, bodyText, bodyHtml } = DropMindDeliveryFormat;
+const { runPublishFlow } = DropMindFanqiePublisher;
 
 function send(message) {
   return new Promise((resolve, reject) => {
@@ -129,7 +131,7 @@ async function fillCurrentPage(setMessage) {
   if (normalizeText(bodyField.value || bodyField.innerText).length < Math.max(20, normalizeText(activeJob.chapterContent).length * 0.9)) throw new Error("正文填入后校验失败，请使用复制正文按钮手动粘贴");
   await send({ type: "update-status", jobId: activeJob.id, status: "filled", chapterContent: activeJob.chapterContent });
   activeJob = { ...activeJob, status: "filled" };
-  setMessage("章数、标题和正文已填入，请检查后在番茄页面提交");
+  setMessage("章数、标题和正文已填入；检查后可自动发布本章");
 }
 
 function createPanel() {
@@ -140,7 +142,7 @@ function createPanel() {
   const root = host.attachShadow({ mode: "open" });
   root.innerHTML = `<style>
     :host{all:initial}.panel{position:fixed;right:20px;bottom:20px;z-index:2147483647;width:330px;border:1px solid #315e4d;background:#f5f7f2;color:#20211e;box-shadow:0 14px 40px rgba(0,0,0,.22);font:13px/1.5 "Microsoft YaHei",sans-serif}.head{display:flex;align-items:center;justify-content:space-between;padding:11px 13px;background:#173f31;color:white}.head strong{font-size:14px}.head button{padding:2px 7px;border:1px solid rgba(255,255,255,.45);background:transparent;color:white;cursor:pointer}.body{display:grid;gap:10px;padding:13px}.body.hidden{display:none}.job{padding:10px;border:1px solid #c8d3c9;background:white}.job strong,.job span{display:block}.job span{margin-top:3px;color:#68716b;font-size:12px}.actions{display:flex;gap:7px;flex-wrap:wrap}.actions button{padding:8px 10px;border:1px solid #bbb8ae;background:white;color:#20211e;font-weight:700;cursor:pointer}.actions button.primary{background:#173f31;color:white;border-color:#173f31}.actions button:disabled{opacity:.45;cursor:not-allowed}.message{padding:9px;border:1px solid #c8d3c9;background:#e7efe9;color:#315e4d;white-space:pre-wrap}.message.error{border-color:#dfb2a9;background:#fff2ef;color:#9f3026}.empty{color:#68716b}.hint{color:#68716b;font-size:11px}
-  </style><section class="panel"><header class="head"><strong>DropMind 番茄投递</strong><button type="button" data-action="minimize">—</button></header><div class="body"><div data-slot="job" class="empty">尚未领取章节</div><div class="actions"><button type="button" class="primary" data-action="claim">领取下一章</button><button type="button" data-action="open" disabled>进入创建章节</button><button type="button" data-action="fill" disabled>填入页面</button></div><div class="actions"><button type="button" data-action="copy-number" disabled>复制章数</button><button type="button" data-action="copy-title" disabled>复制标题</button><button type="button" data-action="copy-body" disabled>复制正文</button><button type="button" data-action="submitted" disabled>我已提交审核</button><button type="button" data-action="abandon" disabled>放弃任务</button></div><div data-slot="message" hidden></div><div class="hint">扩展不会点击番茄最终发布按钮。</div></div></section>`;
+  </style><section class="panel"><header class="head"><strong>DropMind 番茄投递</strong><button type="button" data-action="minimize">—</button></header><div class="body"><div data-slot="job" class="empty">尚未领取章节</div><div class="actions"><button type="button" class="primary" data-action="claim">领取下一章</button><button type="button" data-action="open" disabled>进入创建章节</button><button type="button" data-action="fill" disabled>填入页面</button><button type="button" class="primary" data-action="auto-publish" disabled>自动发布本章</button></div><div class="actions"><button type="button" data-action="copy-number" disabled>复制章数</button><button type="button" data-action="copy-title" disabled>复制标题</button><button type="button" data-action="copy-body" disabled>复制正文</button><button type="button" data-action="submitted" disabled>我已提交审核</button><button type="button" data-action="abandon" disabled>放弃任务</button></div><div data-slot="message" hidden></div><div class="hint">自动发布只处理当前章；遇到未识别界面会停止。</div></div></section>`;
   const body = root.querySelector(".body");
   const jobSlot = root.querySelector("[data-slot='job']");
   const messageSlot = root.querySelector("[data-slot='message']");
@@ -155,22 +157,38 @@ function createPanel() {
   function render() {
     if (!activeJob) {
       jobSlot.className = "empty"; jobSlot.textContent = "尚未领取章节";
-      for (const name of ["open", "fill", "copy-number", "copy-title", "copy-body", "submitted", "abandon"]) buttons[name].disabled = true;
+      for (const name of ["open", "fill", "auto-publish", "copy-number", "copy-title", "copy-body", "submitted", "abandon"]) buttons[name].disabled = true;
       buttons.claim.disabled = false;
       return;
     }
     jobSlot.className = "job";
-    jobSlot.innerHTML = `<strong>第 ${Number(activeJob.chapterNumber)} 章《${escapeHtml(activeJob.chapterTitle)}》</strong><span>${escapeHtml(activeJob.novelName)} → ${escapeHtml(activeJob.targetBookName)}</span><span>${Number(activeJob.contentLength)} 字符 · ${activeJob.status === "filled" ? "已填入" : "已领取"}</span>`;
+    jobSlot.innerHTML = `<strong>第 ${Number(activeJob.chapterNumber)} 章《${escapeHtml(activeJob.chapterTitle)}》</strong><span>${escapeHtml(activeJob.novelName)} → ${escapeHtml(activeJob.targetBookName)}</span><span>${activeJob.publishDate ? `${escapeHtml(activeJob.publishDate)} 12:00 · ` : ""}${Number(activeJob.contentLength)} 字符 · ${activeJob.status === "filled" ? "已填入" : "已领取"}</span>`;
     buttons.claim.disabled = true;
-    for (const name of ["open", "fill", "copy-number", "copy-title", "copy-body"]) buttons[name].disabled = false;
-    buttons.submitted.disabled = activeJob.status !== "filled";
-    buttons.abandon.disabled = false;
+    for (const name of ["open", "fill", "copy-number", "copy-title", "copy-body"]) buttons[name].disabled = publishing;
+    buttons["auto-publish"].disabled = publishing || activeJob.status !== "filled" || !activeJob.publishDate;
+    buttons.submitted.disabled = publishing || activeJob.status !== "filled";
+    buttons.abandon.disabled = publishing;
   }
 
   buttons.minimize.addEventListener("click", () => { minimized = !minimized; body.classList.toggle("hidden", minimized); buttons.minimize.textContent = minimized ? "+" : "—"; });
   buttons.claim.addEventListener("click", async () => { try { setMessage("正在领取…"); const result = await send({ type: "claim-next" }); activeJob = result.job; setMessage(activeJob ? "已领取，请进入对应作品的创建章节页面" : "当前没有待投递章节"); render(); } catch (error) { setMessage(error.message, true); } });
   buttons.open.addEventListener("click", () => { try { const button = findCreateButton(activeJob.targetBookName); if (button) { button.click(); setMessage("已打开创建章节；页面加载完成后点击“填入页面”"); return; } if (!location.href.startsWith(activeJob.targetManageUrl)) { location.href = activeJob.targetManageUrl; return; } throw new Error(`未找到作品“${activeJob.targetBookName}”的创建章节按钮，请手动进入该作品编辑页`); } catch (error) { setMessage(error.message, true); } });
   buttons.fill.addEventListener("click", async () => { try { setMessage("正在填写并校验…"); await fillCurrentPage(setMessage); render(); } catch (error) { setMessage(error.message, true); } });
+  buttons["auto-publish"].addEventListener("click", async () => {
+    if (!activeJob || publishing) return;
+    publishing = true; render();
+    try {
+      const job = activeJob;
+      await runPublishFlow({ publishDate: job.publishDate, onProgress: (progress) => setMessage(progress) });
+      await send({ type: "update-status", jobId: job.id, status: "submitted" });
+      activeJob = null;
+      setMessage("番茄已确认发布，DropMind 投递状态已更新");
+    } catch (error) {
+      setMessage(`${error.message}\n若番茄已经跳转成功，请点击“我已提交审核”完成回写。`, true);
+    } finally {
+      publishing = false; render();
+    }
+  });
   buttons["copy-number"].addEventListener("click", async () => { try { await navigator.clipboard.writeText(String(activeJob.chapterNumber)); setMessage("章数已复制"); } catch { setMessage("章数复制失败", true); } });
   buttons["copy-title"].addEventListener("click", async () => { try { await navigator.clipboard.writeText(activeJob.chapterTitle); setMessage("标题已复制"); } catch { setMessage("标题复制失败", true); } });
   buttons["copy-body"].addEventListener("click", async () => { try { await navigator.clipboard.writeText(bodyText(activeJob.chapterContent)); setMessage("正文已复制（已去除多余空行）"); } catch { setMessage("正文复制失败", true); } });

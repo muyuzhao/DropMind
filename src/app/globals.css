@@ -324,6 +324,11 @@ button.button-quiet:hover { text-decoration: underline; }
 .delivery-target-form { display: grid; grid-template-columns: minmax(180px,.8fr) minmax(300px,1.6fr); gap: 12px; }
 .delivery-target-form label,.delivery-extension-setup label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 700; }
 .delivery-target-form input { width: 100%; padding: 11px 12px; border: 1px solid var(--line); background: white; color: var(--ink); }
+.delivery-schedule { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.delivery-schedule label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 700; }
+.delivery-schedule input { min-width: 168px; padding: 10px 12px; border: 1px solid var(--line); background: white; color: var(--ink); font: 14px Arial, sans-serif; }
+.delivery-schedule span { min-height: 39px; display: inline-flex; align-items: center; gap: 5px; padding: 9px 12px; border: 1px solid #aac2ae; background: white; color: var(--green); font-size: 13px; }
+.delivery-schedule small { align-self: center; color: var(--muted); }
 .delivery-actions { grid-column: 1/-1; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .button-link { display: inline-flex; align-items: center; min-height: 39px; padding: 10px 14px; border: 1px solid var(--line); background: transparent; color: var(--ink); font-size: 13px; font-weight: 700; text-decoration: none; }
 .button-link:hover { background: var(--card); }
@@ -339,6 +344,7 @@ button.button-quiet:hover { text-decoration: underline; }
 
 .draft-editor-grid .result-editor-panel { order: -1; }
 .chapter-selector-details { margin: 22px 0; border: 1px solid var(--line); background: var(--card); }
+.chapter-selector-details.chapter-selector-top { margin: 0 0 18px; }
 .chapter-selector-details > summary { padding: 12px 14px; cursor: pointer; font-weight: 700; }
 .chapter-selector-details .chapter-groups { margin: 0; padding: 0 14px 14px; }
 

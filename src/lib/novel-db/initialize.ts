@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS delivery_targets (
 CREATE TABLE IF NOT EXISTS delivery_jobs (
   id TEXT PRIMARY KEY, novel_id TEXT NOT NULL REFERENCES novels(id) ON DELETE CASCADE,
   chapter_number INTEGER NOT NULL, platform TEXT NOT NULL, target_book_name TEXT NOT NULL, target_manage_url TEXT NOT NULL,
-  chapter_title TEXT NOT NULL, chapter_content TEXT NOT NULL, content_hash TEXT NOT NULL,
+  chapter_title TEXT NOT NULL, chapter_content TEXT NOT NULL, content_hash TEXT NOT NULL, publish_date TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL, last_error TEXT NOT NULL DEFAULT '', claimed_at INTEGER, filled_at INTEGER, submitted_at INTEGER,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
   UNIQUE(novel_id, chapter_number, platform)
@@ -89,10 +89,17 @@ export function initializeNovelDatabase(sqlite: Database.Database) {
 
 export function ensureDeliverySchema(sqlite: Database.Database) {
   const tables = new Set((sqlite.prepare("select name from sqlite_master where type='table'").all() as Array<{ name: string }>).map((row) => row.name));
-  if (["delivery_settings", "delivery_targets", "delivery_jobs"].every((table) => tables.has(table))) return;
-  const novels = tables.has("novels") ? (sqlite.prepare("select count(*) count from novels").get() as { count: number }).count : 0;
-  if (novels > 0) migrationBackup(sqlite, "fanqie-delivery-v1");
-  sqlite.exec(CREATE_DELIVERY_SCHEMA);
+  if (!["delivery_settings", "delivery_targets", "delivery_jobs"].every((table) => tables.has(table))) {
+    const novels = tables.has("novels") ? (sqlite.prepare("select count(*) count from novels").get() as { count: number }).count : 0;
+    if (novels > 0) migrationBackup(sqlite, "fanqie-delivery-v1");
+    sqlite.exec(CREATE_DELIVERY_SCHEMA);
+  }
+  const jobColumns = sqlite.prepare("pragma table_info(delivery_jobs)").all() as Array<{ name: string }>;
+  if (!jobColumns.some((column) => column.name === "publish_date")) {
+    const rows = (sqlite.prepare("select count(*) count from delivery_jobs").get() as { count: number }).count;
+    if (rows > 0) migrationBackup(sqlite, "fanqie-publish-date-v1");
+    sqlite.exec("alter table delivery_jobs add column publish_date TEXT NOT NULL DEFAULT ''");
+  }
 }
 
 function ensureChapterTitleColumn(sqlite: Database.Database) {
