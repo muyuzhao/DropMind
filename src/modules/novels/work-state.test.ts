@@ -6,16 +6,18 @@ describe("novel work state", () => {
     expect(nextWorkPosition({ step: "units", rangeStart: 1, chapter: 1 })).toMatchObject({ rangeStart: 11 });
     expect(nextWorkPosition({ step: "topics", rangeStart: 1, chapter: 1 })).toMatchObject({ step: "volumes" });
     expect(nextWorkPosition({ step: "units", rangeStart: 51, chapter: 1 })).toMatchObject({ step: "outlines", rangeStart: 1 });
-    expect(nextWorkPosition({ step: "outlines", rangeStart: 51, chapter: 1 })).toMatchObject({ step: "drafts", chapter: 1 });
+    expect(nextWorkPosition({ step: "outlines", rangeStart: 51, chapter: 1 })).toMatchObject({ step: "tags", chapter: 1 });
+    expect(nextWorkPosition({ step: "tags", rangeStart: 1, chapter: 1 })).toMatchObject({ step: "drafts", chapter: 1 });
     expect(nextWorkPosition({ step: "drafts", rangeStart: 1, chapter: 18 })).toMatchObject({ chapter: 19 });
     expect(nextWorkPosition({ step: "drafts", rangeStart: 1, chapter: 60 })).toBeNull();
-    expect(nextWorkActionLabel({ step: "outlines", rangeStart: 51, chapter: 1 })).toBe("保存并进入正文");
+    expect(nextWorkActionLabel({ step: "outlines", rangeStart: 51, chapter: 1 })).toBe("保存并进入第6步");
+    expect(nextWorkActionLabel({ step: "tags", rangeStart: 1, chapter: 1 })).toBe("保存并进入正文");
   });
 
   it("normalizes invalid saved positions and formats the continue label", () => {
     expect(normalizeWorkPosition({ step: "drafts", rangeStart: 12, chapter: 99 })).toEqual({ step: "drafts", rangeStart: 1, chapter: 1 });
     expect(formatWorkPosition({ step: "outlines", rangeStart: 21, chapter: 1 })).toBe("继续第5步 · 21-30章");
-    expect(formatWorkPosition({ step: "drafts", rangeStart: 1, chapter: 18 })).toBe("继续第6步 · 第18章");
+    expect(formatWorkPosition({ step: "drafts", rangeStart: 1, chapter: 18 })).toBe("继续第7步 · 第18章");
   });
 
   it("counts outline progress by ten-chapter batch instead of duplicated rows", () => {
@@ -33,6 +35,7 @@ describe("novel work state", () => {
     expect(progress.drafts).toEqual({ completed: 1, total: 60 });
     expect(progress.topics).toEqual({ completed: 2, total: 2 });
     expect(progress.volumes).toEqual({ completed: 2, total: 2 });
+    expect(progress.tags).toEqual({ completed: 0, total: 1 });
   });
 
   it("reports why later steps are blocked", () => {

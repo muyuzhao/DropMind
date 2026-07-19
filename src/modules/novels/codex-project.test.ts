@@ -4,6 +4,7 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { initializeNovelDatabase } from "../../lib/novel-db/initialize";
+import { createAutomationRun, listAutomationRuns, readAutomationManifest, refreshAutomationRunnerFiles } from "./automation";
 import { createNovelRepository } from "./repository";
 import { inspectCodexChapterState, prepareCodexChapterTask, readCodexChapter, syncNovelCodexProject, writeCodexChapter } from "./codex-project";
 
@@ -26,9 +27,10 @@ describe("Codex novel project files", () => {
 
   function completeWorkspace() {
     const novel = repo.createNovel({ name: "古言：测试/项目", referenceTitle: "参考书", referenceSummary: "参考简介" });
-    repo.updateNovel(novel.id, { selectedTopic: "已选选题", firstVolumeOutline: "第一卷完整大纲" });
+    repo.updateNovel(novel.id, { selectedTopic: "【书名】\n古言：测试/项目\n\n【简介】\n一段测试简介", firstVolumeOutline: "第一卷完整大纲" });
     repo.saveStep(novel.id, "volumes", "五卷分卷大纲", false);
     repo.saveStep(novel.id, "settings", "核心世界观与人物设定", false);
+    repo.saveStep(novel.id, "tags", "主分类：古言脑洞\n主题：古代言情\n角色：王妃\n情节：先婚后爱", false);
     repo.saveStoryUnit(novel.id, 1, "第1-10章剧情单元", false);
     repo.saveChapterOutline(novel.id, 2, "第1-10章详细分章大纲，包含第2章", false);
     repo.saveChapter(novel.id, 1, "第一章正文", "saved", false);
@@ -46,6 +48,8 @@ describe("Codex novel project files", () => {
     expect(bookInfo).not.toContain("参考书名");
     expect(bookInfo).not.toContain("参考简介");
     expect(fs.readFileSync(path.join(result.projectDir, "资料", "核心设定.md"), "utf8")).toContain("核心世界观与人物设定");
+    expect(fs.readFileSync(path.join(result.projectDir, "资料", "作品标签.md"), "utf8")).toContain("主分类：古言脑洞");
+    expect(fs.readFileSync(path.join(result.projectDir, "资料", "封面提示词.md"), "utf8")).toContain("【书名】\n古言：测试/项目");
     expect(fs.readFileSync(path.join(result.projectDir, "资料", "剧情单元", "第001-010章.md"), "utf8")).toContain("第1-10章剧情单元");
     expect(fs.readFileSync(result.taskPath, "utf8")).toContain("正文/第001章.md");
     expect(fs.readFileSync(result.taskPath, "utf8")).toContain("正文/第002章.md");
@@ -68,5 +72,58 @@ describe("Codex novel project files", () => {
     writeCodexChapter(refreshed, 1, "工作台保存正文", { rootDir });
     expect(fs.readFileSync(bodyPath, "utf8")).toBe("工作台保存正文");
     expect(inspectCodexChapterState(refreshed, 1, { rootDir }).phase).toBe("imported");
+  });
+
+  it("renames the local project with the novel and preserves all existing files", () => {
+    const workspace = completeWorkspace();
+    const original = syncNovelCodexProject(workspace, { rootDir });
+    const sentinelPath = path.join(original.projectDir, "正文", "保留文件.md");
+    fs.writeFileSync(sentinelPath, "不能丢失", "utf8");
+    const automation = createAutomationRun(workspace, { rootDir });
+
+    repo.updateNovel(String(workspace.novel.id), { name: "改名后的新小说" });
+    const renamedWorkspace = repo.getNovelWorkspace(String(workspace.novel.id))!;
+    const renamed = syncNovelCodexProject(renamedWorkspace, { rootDir });
+
+    expect(renamed.folderName).toBe(`改名后的新小说-${String(workspace.novel.id).slice(0, 8)}`);
+    expect(renamed.renamedFrom).toBe(original.projectDir);
+    expect(fs.existsSync(original.projectDir)).toBe(false);
+    expect(fs.readFileSync(path.join(renamed.projectDir, "正文", "保留文件.md"), "utf8")).toBe("不能丢失");
+    expect(fs.readFileSync(path.join(renamed.projectDir, "资料", "作品信息.md"), "utf8")).toContain("小说名称：改名后的新小说");
+
+    const runs = listAutomationRuns(renamedWorkspace, { rootDir });
+    expect(runs).toHaveLength(1);
+    expect(runs[0].runDir).not.toBe(automation.runDir);
+    expect(refreshAutomationRunnerFiles(runs[0].runDir, runs[0].manifest, { novelName: renamedWorkspace.novel.name })).toBe(true);
+    expect(readAutomationManifest(runs[0].runDir).runner.command).toContain(runs[0].runDir);
+    expect(readAutomationManifest(runs[0].runDir).runner.command).not.toContain(original.projectDir);
+    expect(readAutomationManifest(runs[0].runDir).novelName).toBe("改名后的新小说");
+  });
+
+  it("does not rename over a conflicting target directory", () => {
+    const workspace = completeWorkspace();
+    const original = syncNovelCodexProject(workspace, { rootDir });
+    repo.updateNovel(String(workspace.novel.id), { name: "已存在的新名字" });
+    const renamedWorkspace = repo.getNovelWorkspace(String(workspace.novel.id))!;
+    const targetDir = path.join(rootDir, `已存在的新名字-${String(workspace.novel.id).slice(0, 8)}`);
+    fs.mkdirSync(targetDir, { recursive: true });
+    fs.writeFileSync(path.join(targetDir, "占位.txt"), "目标内容", "utf8");
+
+    expect(() => syncNovelCodexProject(renamedWorkspace, { rootDir })).toThrow("目标目录和旧目录同时存在");
+    expect(fs.existsSync(original.projectDir)).toBe(true);
+    expect(fs.readFileSync(path.join(targetDir, "占位.txt"), "utf8")).toBe("目标内容");
+  });
+
+  it("waits for a running automation task before renaming the directory", () => {
+    const workspace = completeWorkspace();
+    const original = syncNovelCodexProject(workspace, { rootDir });
+    const automation = createAutomationRun(workspace, { rootDir });
+    automation.manifest.status = "running";
+    fs.writeFileSync(path.join(automation.runDir, "manifest.json"), `${JSON.stringify(automation.manifest, null, 2)}\n`, "utf8");
+    repo.updateNovel(String(workspace.novel.id), { name: "运行中改名" });
+    const renamedWorkspace = repo.getNovelWorkspace(String(workspace.novel.id))!;
+
+    expect(() => syncNovelCodexProject(renamedWorkspace, { rootDir })).toThrow("正在运行，目录暂未重命名");
+    expect(fs.existsSync(original.projectDir)).toBe(true);
   });
 });

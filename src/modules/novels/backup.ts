@@ -1,9 +1,22 @@
 import { z } from "zod";
-import { chapterStatusValues, stepKeyValues } from "../../lib/novel-db/schema";
+import { chapterStatusValues, promptTemplateKeyValues, stepKeyValues } from "../../lib/novel-db/schema";
+import { DEFAULT_PROMPT_TEMPLATES } from "./templates";
 
 const draftFlag = z.union([z.boolean(), z.literal(0), z.literal(1)]).transform(Boolean);
 const batchStart = z.number().int().refine((value) => [1, 11, 21, 31, 41, 51].includes(value));
 const chapterNumber = z.number().int().min(1).max(60);
+const promptTemplateSchema = z.object({ key: z.enum(promptTemplateKeyValues), template: z.string() }).passthrough();
+
+const compatiblePromptTemplatesSchema = z.array(promptTemplateSchema).transform((rows) => {
+  const templates = [...rows];
+  if (!templates.some((row) => row.key === "tags")) {
+    templates.push({ key: "tags", template: DEFAULT_PROMPT_TEMPLATES.tags });
+  }
+  if (!templates.some((row) => row.key === "cover")) {
+    templates.push({ key: "cover", template: DEFAULT_PROMPT_TEMPLATES.cover });
+  }
+  return templates;
+});
 
 const backupWorkspaceSchema = z.object({
   novel: z.object({
@@ -16,7 +29,7 @@ const backupWorkspaceSchema = z.object({
     currentRangeStart: batchStart.default(1),
     currentChapter: chapterNumber.default(1),
   }).passthrough(),
-  templates: z.array(z.object({ key: z.enum(stepKeyValues), template: z.string() }).passthrough()).length(stepKeyValues.length),
+  templates: compatiblePromptTemplatesSchema,
   steps: z.array(z.object({ key: z.enum(stepKeyValues), content: z.string(), isDraft: draftFlag.default(false) }).passthrough()),
   storyUnits: z.array(z.object({ startChapter: batchStart, endChapter: chapterNumber, content: z.string(), isDraft: draftFlag.default(false) }).passthrough()),
   chapterOutlines: z.array(z.object({ chapterNumber, content: z.string(), isDraft: draftFlag.default(false) }).passthrough()),
@@ -27,7 +40,9 @@ const backupWorkspaceSchema = z.object({
   }).passthrough()).default([]),
 }).superRefine((workspace, context) => {
   const templateKeys = workspace.templates.map((row) => row.key);
-  if (new Set(templateKeys).size !== stepKeyValues.length) context.addIssue({ code: "custom", message: "备份中的六套提示词不完整", path: ["templates"] });
+  if (templateKeys.length !== promptTemplateKeyValues.length || new Set(templateKeys).size !== promptTemplateKeyValues.length || promptTemplateKeyValues.some((key) => !templateKeys.includes(key))) {
+    context.addIssue({ code: "custom", message: "备份中的提示词不完整", path: ["templates"] });
+  }
   for (const [field, values] of [
     ["steps", workspace.steps.map((row) => row.key)],
     ["storyUnits", workspace.storyUnits.map((row) => row.startChapter)],

@@ -97,9 +97,22 @@ describe("initializeNovelDatabase", () => {
     initializeNovelDatabase(sqlite);
 
     const templates = sqlite.prepare("select template from prompt_templates where novel_id=?").all("novel-1") as Array<{ template: string }>;
-    expect(templates).toHaveLength(6);
+    expect(templates).toHaveLength(8);
     expect(templates.every((row) => !row.template.includes("{{"))).toBe(true);
-    expect(templates.every((row) => row.template.includes("创作要求"))).toBe(true);
+    expect(templates.filter((row) => !row.template.includes("番茄爽文小说封面创作")).every((row) => row.template.includes("创作要求"))).toBe(true);
+    expect(templates.some((row) => row.template.includes("番茄爽文小说封面创作"))).toBe(true);
     expect(sqlite.prepare("select content from novel_steps where id=?").get("step-1")).toMatchObject({ content: "已经保存的核心设定" });
+  });
+
+  it("adds the default work tag guide when an existing scheme is missing it", () => {
+    const sqlite = new Database(":memory:");
+    initializeNovelDatabase(sqlite);
+    sqlite.prepare("delete from prompt_scheme_templates where scheme_id=? and key='tags'").run("system-default");
+
+    initializeNovelDatabase(sqlite);
+
+    const row = sqlite.prepare("select template from prompt_scheme_templates where scheme_id=? and key='tags'")
+      .get("system-default") as { template: string };
+    expect(row.template).toContain("作品标签生成指南");
   });
 });

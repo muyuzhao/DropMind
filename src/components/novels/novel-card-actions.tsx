@@ -11,6 +11,7 @@ export function NovelCardActions({ novelId, novelName }: { novelId: string; nove
     if (!nextName || nextName === novelName) return;
     const result = await updateNovelAction({ novelId, name: nextName });
     if (!result.ok) { window.alert(result.error); return; }
+    if (result.warning) window.alert(result.warning);
     router.refresh();
   }
 

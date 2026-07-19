@@ -2,7 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { rangeForChapter } from "./ranges";
+import { buildCoverPrompt } from "./prompts";
 import type { NovelWorkspaceData } from "./types";
+import { parseSelectedTopic } from "./selected-topic";
 
 type ProjectOptions = { rootDir?: string };
 export type CodexChapterPhase = "not_initialized" | "synced" | "task_ready" | "file_ready" | "imported";
@@ -64,13 +66,67 @@ function novelIdentity(workspace: NovelWorkspaceData) {
   };
 }
 
-export function getNovelCodexProjectInfo(workspace: NovelWorkspaceData, options: ProjectOptions = {}) {
+function desiredProjectFolder(workspace: NovelWorkspaceData) {
   const { id, name } = novelIdentity(workspace);
-  const rootDir = getNovelProjectsRoot(options);
   const suffix = `-${id.slice(0, 8)}`;
-  let folderName = `${safeFolderName(name)}${suffix}`;
+  return { folderName: `${safeFolderName(name)}${suffix}`, suffix };
+}
+
+function runningAutomationRun(projectDir: string) {
+  for (const automationFolder of ["自动生成", "自动正文"]) {
+    const automationDir = path.join(projectDir, automationFolder);
+    if (!fs.existsSync(automationDir)) continue;
+    for (const entry of fs.readdirSync(automationDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const manifestPath = path.join(automationDir, entry.name, "manifest.json");
+      if (!fs.existsSync(manifestPath)) continue;
+      try {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8").replace(/^\uFEFF/, "")) as { status?: string };
+        if (manifest.status === "running") return entry.name;
+      } catch {
+        // 损坏的历史任务不应阻止小说目录按当前书名迁移。
+      }
+    }
+  }
+  return null;
+}
+
+function alignNovelProjectFolder(workspace: NovelWorkspaceData, options: ProjectOptions = {}) {
+  const rootDir = getNovelProjectsRoot(options);
+  const desired = desiredProjectFolder(workspace);
+  const desiredDir = path.join(rootDir, desired.folderName);
+  if (!fs.existsSync(rootDir)) return { projectDir: desiredDir, folderName: desired.folderName, exists: false, renamedFrom: null as string | null };
+
+  const matchingFolders = fs.readdirSync(rootDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name.endsWith(desired.suffix));
+  const desiredEntry = matchingFolders.find((entry) => entry.name === desired.folderName);
+  const previousEntries = matchingFolders.filter((entry) => entry.name !== desired.folderName);
+
+  if (desiredEntry) {
+    if (previousEntries.length > 0) throw new Error(`本地目录重命名冲突：目标目录和旧目录同时存在，请先检查 ${rootDir}`);
+    return { projectDir: desiredDir, folderName: desired.folderName, exists: true, renamedFrom: null as string | null };
+  }
+  if (previousEntries.length === 0) return { projectDir: desiredDir, folderName: desired.folderName, exists: false, renamedFrom: null as string | null };
+  if (previousEntries.length > 1) throw new Error(`发现多个属于当前小说的本地目录，请先检查 ${rootDir}`);
+
+  const previousDir = path.join(rootDir, previousEntries[0].name);
+  if (fs.existsSync(desiredDir)) throw new Error(`本地目录重命名失败：目标目录已存在 ${desiredDir}`);
+  const activeRun = runningAutomationRun(previousDir);
+  if (activeRun) throw new Error(`自动生成任务 ${activeRun} 正在运行，目录暂未重命名；任务结束后点击“同步全部资料”即可重试`);
+  try {
+    fs.renameSync(previousDir, desiredDir);
+  } catch (error) {
+    throw new Error(`本地目录重命名失败：${previousDir} → ${desiredDir}`, { cause: error });
+  }
+  return { projectDir: desiredDir, folderName: desired.folderName, exists: true, renamedFrom: previousDir };
+}
+
+export function getNovelCodexProjectInfo(workspace: NovelWorkspaceData, options: ProjectOptions = {}) {
+  const rootDir = getNovelProjectsRoot(options);
+  const desired = desiredProjectFolder(workspace);
+  let folderName = desired.folderName;
   if (fs.existsSync(rootDir)) {
-    const existing = fs.readdirSync(rootDir, { withFileTypes: true }).find((entry) => entry.isDirectory() && entry.name.endsWith(suffix));
+    const existing = fs.readdirSync(rootDir, { withFileTypes: true }).find((entry) => entry.isDirectory() && entry.name.endsWith(desired.suffix));
     if (existing) folderName = existing.name;
   }
   const projectDir = path.join(rootDir, folderName);
@@ -97,7 +153,7 @@ function groupedChapterOutlines(workspace: NovelWorkspaceData) {
 }
 
 export function syncNovelCodexProject(workspace: NovelWorkspaceData, options: ProjectOptions = {}) {
-  const info = getNovelCodexProjectInfo(workspace, options);
+  const info = alignNovelProjectFolder(workspace, options);
   const { projectDir } = info;
   const novel = workspace.novel;
   fs.mkdirSync(path.join(projectDir, "资料", "剧情单元"), { recursive: true });
@@ -110,6 +166,10 @@ export function syncNovelCodexProject(workspace: NovelWorkspaceData, options: Pr
   writeText(path.join(projectDir, "资料", "分卷大纲.md"), markdown("分卷大纲", stepContent(workspace, "volumes")));
   writeText(path.join(projectDir, "资料", "本卷大纲.md"), markdown("本卷大纲", String(novel.firstVolumeOutline ?? "")));
   writeText(path.join(projectDir, "资料", "核心设定.md"), markdown("小说核心设定", stepContent(workspace, "settings")));
+  writeText(path.join(projectDir, "资料", "作品标签.md"), markdown("作品标签", stepContent(workspace, "tags")));
+  const selectedTopic = parseSelectedTopic(String(novel.selectedTopic ?? ""));
+  const coverInstruction = String(workspace.templates.find((row) => row.key === "cover")?.template ?? "");
+  writeText(path.join(projectDir, "资料", "封面提示词.md"), markdown("封面提示词", buildCoverPrompt(selectedTopic.title || String(novel.name), selectedTopic.summary, coverInstruction)));
   writeText(path.join(projectDir, "资料", "正文创作要求.md"), markdown("正文创作要求", draftInstruction(workspace)));
 
   for (const row of workspace.storyUnits) {

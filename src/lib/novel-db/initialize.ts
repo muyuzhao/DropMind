@@ -4,7 +4,7 @@ import Database from "better-sqlite3";
 import { DEFAULT_PROMPT_TEMPLATES } from "../../modules/novels/templates";
 import { migrateLegacyBatchTemplate } from "../../modules/novels/batch-workflow-migration";
 import { stripLegacyPlaceholders } from "../../modules/novels/structured-prompts";
-import type { StepKey } from "./schema";
+import { promptTemplateKeyValues, type StepKey } from "./schema";
 
 export const SYSTEM_SCHEME_ID = "system-default";
 
@@ -58,6 +58,7 @@ export function initializeNovelDatabase(sqlite: Database.Database) {
   ensurePromptSchemeColumn(sqlite);
   ensureWorkPositionColumns(sqlite);
   seedDefaultPromptScheme(sqlite);
+  ensurePublishPromptTemplates(sqlite);
   migrateTenChapterWorkflow(sqlite);
   migrateStructuredPromptModel(sqlite);
   return sqlite;
@@ -76,9 +77,22 @@ function ensureWorkPositionColumns(sqlite: Database.Database) {
 
 export function seedDefaultPromptScheme(sqlite: Database.Database) {
   const now = Date.now();
-  sqlite.prepare("insert or ignore into prompt_schemes (id,name,description,is_system,is_default,created_at,updated_at) values (?,?,?,?,?,?,?)").run(SYSTEM_SCHEME_ID, "系统默认版", "内置六步提示词", 1, 1, now, now);
+  sqlite.prepare("insert or ignore into prompt_schemes (id,name,description,is_system,is_default,created_at,updated_at) values (?,?,?,?,?,?,?)").run(SYSTEM_SCHEME_ID, "系统默认版", "内置七步提示词", 1, 1, now, now);
+  sqlite.prepare("update prompt_schemes set description=?,updated_at=? where id=? and description<>?").run("内置七步提示词", now, SYSTEM_SCHEME_ID, "内置七步提示词");
   const insert = sqlite.prepare("insert or ignore into prompt_scheme_templates (id,scheme_id,key,template,created_at,updated_at) values (?,?,?,?,?,?)");
   for (const [key, template] of Object.entries(DEFAULT_PROMPT_TEMPLATES)) insert.run(`${SYSTEM_SCHEME_ID}-${key}`, SYSTEM_SCHEME_ID, key, template, now, now);
+}
+
+function ensurePublishPromptTemplates(sqlite: Database.Database) {
+  const timestamp = Date.now();
+  const insertScheme = sqlite.prepare("insert or ignore into prompt_scheme_templates (id,scheme_id,key,template,created_at,updated_at) values (?,?,?,?,?,?)");
+  for (const scheme of sqlite.prepare("select id from prompt_schemes").all() as Array<{ id: string }>) {
+    for (const key of ["tags", "cover"] as const) insertScheme.run(`${scheme.id}-${key}`, scheme.id, key, DEFAULT_PROMPT_TEMPLATES[key], timestamp, timestamp);
+  }
+  const insertNovel = sqlite.prepare("insert or ignore into prompt_templates (id,novel_id,key,template,created_at,updated_at) values (?,?,?,?,?,?)");
+  for (const novel of sqlite.prepare("select id from novels where prompt_scheme_id is null").all() as Array<{ id: string }>) {
+    for (const key of ["tags", "cover"] as const) insertNovel.run(`${novel.id}-${key}`, novel.id, key, DEFAULT_PROMPT_TEMPLATES[key], timestamp, timestamp);
+  }
 }
 
 function migrationBackup(sqlite: Database.Database, migrationKey: string) {
@@ -141,7 +155,7 @@ export function migrateStructuredPromptModel(sqlite: Database.Database) {
     const schemeSignatures = new Map<string, string>();
     for (const scheme of sqlite.prepare("select id from prompt_schemes").all() as Array<{ id: string }>) {
       const rows = schemeRows.filter((row) => row.scheme_id === scheme.id);
-      if (rows.length === 6) schemeSignatures.set(scheme.id, JSON.stringify(rows.map((row) => [row.key, row.template])));
+      if (rows.length === promptTemplateKeyValues.length) schemeSignatures.set(scheme.id, JSON.stringify(rows.map((row) => [row.key, row.template])));
     }
     for (const novel of sqlite.prepare("select id from novels where prompt_scheme_id is null").all() as Array<{ id: string }>) {
       const rows = sqlite.prepare("select key,template from prompt_templates where novel_id=? order by key").all(novel.id) as Array<{ key: string; template: string }>;

@@ -1,4 +1,4 @@
-import type { ChapterStatus, StepKey } from "../../lib/novel-db/schema";
+import type { ChapterStatus, PromptTemplateKey, StepKey } from "../../lib/novel-db/schema";
 
 export type DraftFlag = boolean | 0 | 1;
 
@@ -17,7 +17,7 @@ export type NovelData = {
   updatedAt: number;
 };
 
-export type PromptTemplateData = { id: string; key: StepKey; template: string; createdAt: number; updatedAt: number; novelId?: string; schemeId?: string };
+export type PromptTemplateData = { id: string; key: PromptTemplateKey; template: string; createdAt: number; updatedAt: number; novelId?: string; schemeId?: string };
 export type NovelStepData = { id: string; novelId: string; key: StepKey; content: string; isDraft: DraftFlag; createdAt: number; updatedAt: number };
 export type StoryUnitData = { id: string; novelId: string; startChapter: number; endChapter: number; content: string; isDraft: DraftFlag; createdAt: number; updatedAt: number };
 export type ChapterOutlineData = { id: string; novelId: string; chapterNumber: number; content: string; isDraft: DraftFlag; createdAt: number; updatedAt: number };
