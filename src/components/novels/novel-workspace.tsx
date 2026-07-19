@@ -7,10 +7,12 @@ import { deleteNovelAction, detachNovelSchemeAction, exportNovelAction, importCo
 import type { CodexChapterState } from "@/modules/novels/codex-project";
 import type { ContentVersionData, NovelWorkspaceData } from "@/modules/novels/types";
 import { buildPromptContext } from "@/modules/novels/prompts";
+import { formatSelectedTopic, parseSelectedTopic } from "@/modules/novels/selected-topic";
 import { CODEX_DRAFT_COMMAND } from "@/modules/novels/structured-prompts";
 import { STEP_LABELS } from "@/modules/novels/templates";
 import { buildWorkflowOverview, nextWorkActionLabel, nextWorkPosition, normalizeWorkPosition, type WorkPosition } from "@/modules/novels/work-state";
 import { ChapterSelector, type SelectorItemState } from "./chapter-selector";
+import { AutomationPanel } from "./automation-panel";
 import { CodexProjectPanel } from "./codex-project-panel";
 import { ContentHistory } from "./content-history";
 import { WorkflowSidebar } from "./workflow-sidebar";
@@ -80,6 +82,7 @@ function download(content: string, filename: string, type: string) {
 
 export function NovelWorkspace({ initial, schemes, codexProject }: { initial: NovelWorkspaceData; schemes:Array<{id:string;name:string}>; codexProject:{projectDir:string;folderName:string;exists:boolean} }) {
   const router = useRouter();
+  const initialSelectedTopic = parseSelectedTopic(String(initial.novel.selectedTopic ?? ""));
   const initialPosition = normalizeWorkPosition({ step: String(initial.novel.currentStep) as StepKey, rangeStart: Number(initial.novel.currentRangeStart ?? 1), chapter: Number(initial.novel.currentChapter ?? 1) });
   const initialSnapshot = editorSnapshot(initial, initialPosition);
   const [step, setStep] = useState<StepKey>(initialPosition.step);
@@ -93,8 +96,10 @@ export function NovelWorkspace({ initial, schemes, codexProject }: { initial: No
   const [savePhase, setSavePhase] = useState<SavePhase>("idle");
   const savedContentCache = useRef(new Map<string, EditorSnapshot>([[workKey(initialPosition), initialSnapshot]]));
   const positionSaveQueue = useRef<Promise<void>>(Promise.resolve());
-  const [selectedTopic, setSelectedTopic] = useState(String(initial.novel.selectedTopic ?? ""));
-  const [savedSelectedTopic, setSavedSelectedTopic] = useState(String(initial.novel.selectedTopic ?? ""));
+  const [selectedTopicTitle, setSelectedTopicTitle] = useState(initialSelectedTopic.title);
+  const [selectedTopicSummary, setSelectedTopicSummary] = useState(initialSelectedTopic.summary);
+  const [savedSelectedTopicTitle, setSavedSelectedTopicTitle] = useState(initialSelectedTopic.title);
+  const [savedSelectedTopicSummary, setSavedSelectedTopicSummary] = useState(initialSelectedTopic.summary);
   const [firstVolumeOutline, setFirstVolumeOutline] = useState(String(initial.novel.firstVolumeOutline ?? ""));
   const [savedFirstVolumeOutline, setSavedFirstVolumeOutline] = useState(String(initial.novel.firstVolumeOutline ?? ""));
   const position = useMemo(() => ({ step, rangeStart, chapter }), [step, rangeStart, chapter]);
@@ -117,8 +122,13 @@ export function NovelWorkspace({ initial, schemes, codexProject }: { initial: No
   const [codexState, setCodexState] = useState<CodexChapterState>({ phase: codexProject.exists ? "synced" : "not_initialized", projectExists: codexProject.exists, taskChapter: null, fileExists: false, fileModifiedAt: null, missing: [] });
   const [chapterStatusOverrides, setChapterStatusOverrides] = useState(new Map<number, ChapterStatus>());
   const [restoringVersionId, setRestoringVersionId] = useState<string | null>(null);
+  const [automationMode, setAutomationMode] = useState(false);
+  const selectedTopic = formatSelectedTopic({ title: selectedTopicTitle, summary: selectedTopicSummary });
+  const selectedTopicDirty = selectedTopicTitle !== savedSelectedTopicTitle || selectedTopicSummary !== savedSelectedTopicSummary;
+  const selectedTopicConfirmed = Boolean(savedSelectedTopicTitle.trim() && savedSelectedTopicSummary.trim());
+  const selectedTopicComplete = Boolean(selectedTopicTitle.trim() && selectedTopicSummary.trim());
   const instructionDirty = instructionOverride?.key === instructionKey && instructionOverride.value !== baseInstruction;
-  const auxiliaryDirty = selectedTopic !== savedSelectedTopic || firstVolumeOutline !== savedFirstVolumeOutline || instructionDirty;
+  const auxiliaryDirty = selectedTopicDirty || firstVolumeOutline !== savedFirstVolumeOutline || instructionDirty;
   const hasUnsavedChanges = isDirty || auxiliaryDirty;
   const relevantVersions = useMemo(() => initial.contentVersions.filter((version) => {
     if (version.contentType === "template") return initial.promptSource.mode === "custom" && version.contentKey === step;
@@ -274,8 +284,9 @@ export function NovelWorkspace({ initial, schemes, codexProject }: { initial: No
     const saved = await saveCurrent();
     if (!saved) return;
     if (step === "topics") {
-      if (!selectedTopic.trim()) { setMessage("请先确认最终选题"); return; }
-      if (selectedTopic !== savedSelectedTopic && !await saveNovelField("selectedTopic", selectedTopic, "已保存最终选题")) return;
+      if (!selectedTopicTitle.trim()) { setMessage("请先填写书名"); return; }
+      if (!selectedTopicSummary.trim()) { setMessage("请先填写简介"); return; }
+      if (selectedTopicDirty && !await saveNovelField("selectedTopic", selectedTopic, "已保存书名和简介")) return;
     }
     if (step === "volumes") {
       if (!firstVolumeOutline.trim()) { setMessage("请先确认本卷大纲"); return; }
@@ -320,7 +331,11 @@ export function NovelWorkspace({ initial, schemes, codexProject }: { initial: No
   async function saveNovelField(field: "selectedTopic" | "firstVolumeOutline", value: string, success: string) {
     const result = await updateNovelAction({ novelId: initial.novel.id, [field]: value });
     if (!result.ok) { setMessage(result.error); return false; }
-    if (field === "selectedTopic") setSavedSelectedTopic(value); else setSavedFirstVolumeOutline(value);
+    if (field === "selectedTopic") {
+      const fields = parseSelectedTopic(value);
+      setSavedSelectedTopicTitle(fields.title);
+      setSavedSelectedTopicSummary(fields.summary);
+    } else setSavedFirstVolumeOutline(value);
     router.refresh();
     setMessage(result.warning ?? success);
     return true;
@@ -344,7 +359,13 @@ export function NovelWorkspace({ initial, schemes, codexProject }: { initial: No
     setRestoringVersionId(null);
     if (!result.ok) { setMessage(result.error); return; }
     if (version.contentType === "novel_field") {
-      if (version.contentKey === "selectedTopic") { setSelectedTopic(version.content); setSavedSelectedTopic(version.content); }
+      if (version.contentKey === "selectedTopic") {
+        const fields = parseSelectedTopic(version.content);
+        setSelectedTopicTitle(fields.title);
+        setSelectedTopicSummary(fields.summary);
+        setSavedSelectedTopicTitle(fields.title);
+        setSavedSelectedTopicSummary(fields.summary);
+      }
       else { setFirstVolumeOutline(version.content); setSavedFirstVolumeOutline(version.content); }
     } else if (version.contentType === "template") setInstructionOverride(null);
     else {
@@ -376,11 +397,14 @@ export function NovelWorkspace({ initial, schemes, codexProject }: { initial: No
   return <main className={`workspace-shell ${sidebarOpen?"sidebar-open":"sidebar-closed"}`}>
     <WorkflowSidebar open={sidebarOpen} novelName={initial.novel.name} activeStep={step} position={position} overview={workflowOverview} onLeave={confirmLeave} onOpen={openPosition} onToggle={() => setSidebarOpen((open) => { const next = !open; writeSidebarState(next); return next; })} onBackup={async () => { const result = await exportNovelAction(String(initial.novel.id), "json"); if (result.ok) download(result.content, `${initial.novel.name}-备份.json`, "application/json"); else setMessage(result.error); }} onExportText={async () => { const result = await exportNovelAction(String(initial.novel.id), "txt"); if (result.ok) download(result.content, `${initial.novel.name}-第一卷.txt`, "text/plain;charset=utf-8"); else setMessage(result.error); }} />
     <section className="workspace-main"><header><p className="novel-kicker">{STEP_LABELS[step]}</p><h1>{String(initial.novel.name)}</h1></header>
+      {!automationMode && selectedTopicConfirmed && <section className="automation-entry"><div><strong>第一步已确认，可以交给本地 Codex 串行生成后续规划</strong><span>手动模式仍是默认模式，自动结果通过校验后才会导入。</span></div><button type="button" onClick={() => { if (confirmLeave()) setAutomationMode(true); }}>自动生成第 2–5 步</button></section>}
+      {automationMode && <AutomationPanel novelId={String(initial.novel.id)} onReturnManual={() => setAutomationMode(false)} />}
+      <div hidden={automationMode}>
       <section className="prompt-source-bar"><strong>当前提示词：{initial.promptSource.schemeName}{initial.promptSource.mode==="scheme"?"（跟随方案）":""}</strong><select value={schemeChoice} onChange={(event)=>setSchemeChoice(event.target.value)}>{schemes.map((scheme)=><option key={scheme.id} value={scheme.id}>{scheme.name}</option>)}</select><button type="button" onClick={async()=>{if(!confirmLeave())return;const result=await setNovelSchemeAction({novelId:String(initial.novel.id),schemeId:schemeChoice});if(result.ok){router.refresh();setMessage(result.warning??"已切换方案")}else setMessage(result.error)}}>{initial.promptSource.mode==="scheme"?"切换方案":"恢复跟随方案"}</button>{initial.promptSource.mode==="scheme"&&<button type="button" onClick={async()=>{if(!confirmLeave())return;const result=await detachNovelSchemeAction(String(initial.novel.id));if(result.ok){router.refresh();setMessage(result.warning??"已转为本书专用")}else setMessage(result.error)}}>转为本书专用</button>}</section>
       {(step === "units" || step === "outlines") && <ChapterSelector mode="range" value={rangeStart} onChange={(value) => openPosition({ ...position, rangeStart: value })} states={rangeStates} />}
       {step === "drafts" && <><div className="chapter-navigation"><button type="button" disabled={chapter===1} onClick={()=>openPosition({...position,chapter:chapter-1})}>← 上一章</button><strong>第 {chapter} 章</strong><button type="button" disabled={chapter===60} onClick={()=>openPosition({...position,chapter:chapter+1})}>下一章 →</button><button type="button" onClick={()=>{const first=[...chapterStates].find(([,state])=>state==="ready");if(first)openPosition({...position,chapter:first[0]});else setMessage("当前没有可直接开始的未完成章节")}}>首个可写章节</button></div><ChapterSelector mode="chapter" value={chapter} onChange={(value) => openPosition({ ...position, chapter: value })} states={chapterStates} /></>}
-      {(step === "topics" || step === "volumes") && <section className="step-checklist"><strong>本步骤完成条件</strong><span className={savedContent.trim()&&!isDirty?"done":"pending"}>{savedContent.trim()&&!isDirty?"✓":"1"} 模型生成结果已保存</span><span className={(step==="topics"?selectedTopic===savedSelectedTopic&&Boolean(savedSelectedTopic.trim()):firstVolumeOutline===savedFirstVolumeOutline&&Boolean(savedFirstVolumeOutline.trim()))?"done":"pending"}>{(step==="topics"?selectedTopic===savedSelectedTopic&&Boolean(savedSelectedTopic.trim()):firstVolumeOutline===savedFirstVolumeOutline&&Boolean(savedFirstVolumeOutline.trim()))?"✓":"2"} {step==="topics"?"最终选题已确认":"本卷大纲已确认"}</span></section>}
-      {step === "topics" && <label className="novel-inline-field">最终选题<textarea value={selectedTopic} onChange={(event) => setSelectedTopic(event.target.value)} rows={4} /><button type="button" disabled={selectedTopic===savedSelectedTopic} onClick={()=>saveNovelField("selectedTopic",selectedTopic,"已保存最终选题")}>保存最终选题</button></label>}
+      {(step === "topics" || step === "volumes") && <section className="step-checklist"><strong>本步骤完成条件</strong><span className={savedContent.trim()&&!isDirty?"done":"pending"}>{savedContent.trim()&&!isDirty?"✓":"1"} 模型生成结果已保存</span><span className={(step==="topics"?selectedTopicConfirmed&&!selectedTopicDirty:firstVolumeOutline===savedFirstVolumeOutline&&Boolean(savedFirstVolumeOutline.trim()))?"done":"pending"}>{(step==="topics"?selectedTopicConfirmed&&!selectedTopicDirty:firstVolumeOutline===savedFirstVolumeOutline&&Boolean(savedFirstVolumeOutline.trim()))?"✓":"2"} {step==="topics"?"书名和简介已确认":"本卷大纲已确认"}</span></section>}
+      {step === "topics" && <section className="novel-inline-field selected-topic-fields"><strong>最终选题</strong><label>书名<input value={selectedTopicTitle} onChange={(event) => setSelectedTopicTitle(event.target.value)} placeholder="输入最终书名" /></label><label>简介<textarea value={selectedTopicSummary} onChange={(event) => setSelectedTopicSummary(event.target.value)} rows={8} placeholder="输入最终简介" /></label><button type="button" disabled={!selectedTopicDirty||!selectedTopicComplete} onClick={()=>saveNovelField("selectedTopic",selectedTopic,"已保存书名和简介")}>保存书名和简介</button></section>}
       {step === "volumes" && <label className="novel-inline-field">第一卷大纲<textarea value={firstVolumeOutline} onChange={(event) => setFirstVolumeOutline(event.target.value)} rows={6} /><button type="button" disabled={firstVolumeOutline===savedFirstVolumeOutline} onClick={()=>saveNovelField("firstVolumeOutline",firstVolumeOutline,"已保存第一卷大纲")}>保存第一卷大纲</button></label>}
       {step === "units" && <label className="novel-inline-field">本卷大纲<textarea value={firstVolumeOutline} onChange={(event) => setFirstVolumeOutline(event.target.value)} rows={6} placeholder="粘贴当前卷的大纲，保存后六个批次会自动复用" /><button type="button" disabled={firstVolumeOutline===savedFirstVolumeOutline} onClick={()=>saveNovelField("firstVolumeOutline",firstVolumeOutline,"已保存本卷大纲")}>保存本卷大纲</button></label>}
       {initial.promptSource.mode==="custom"&&<label className="novel-inline-field">本书专用 · {STEP_LABELS[step]}创作要求<textarea value={customInstruction} onChange={(event)=>setInstructionOverride({key:instructionKey,value:event.target.value})} rows={8}/><button type="button" disabled={customInstruction===baseInstruction} onClick={async()=>{const result=await updateTemplateAction({novelId:String(initial.novel.id),key:step,template:customInstruction});if(result.ok){setInstructionOverride(null);router.refresh();setMessage(result.warning??"已保存本书专用要求")}else setMessage(result.error)}}>保存本书专用要求</button></label>}
@@ -388,9 +412,10 @@ export function NovelWorkspace({ initial, schemes, codexProject }: { initial: No
       <section className="automatic-context"><strong>本步骤自动加入</strong><div>{promptInfo.automaticLabels.map((label)=><span key={label}>{label}</span>)}</div></section>
       <div className="editor-grid"><section className="editor-panel"><div className="panel-title"><h3>{step==="drafts"?"Codex短指令":"最终提示词（可临时修改）"}</h3><div className="panel-title-actions"><button type="button" onClick={()=>setPromptOverride(null)}>{step==="drafts"?"恢复短指令":"恢复自动生成"}</button><button type="button" disabled={promptMissing.length > 0||!promptText.trim()} onClick={copyPrompt}>复制提示词</button></div></div>
         {promptMissing.length > 0 && <div className="missing-links"><strong>还缺少：</strong>{promptMissing.map((label)=><button type="button" key={label} onClick={()=>openMissing(label)}>{label} →</button>)}</div>}<textarea value={promptText} onChange={(event)=>setPromptOverride({key:promptKey,value:event.target.value})} rows={step==="drafts"?6:22} /></section>
-        <section className="editor-panel"><div className="panel-title"><h3>{step==="drafts"?`第${chapter}章正文（可手动编辑）`:"粘贴 Gemini 返回内容"}</h3><div className="panel-title-actions"><span className={`save-status ${saveStatus.kind}`}>{saveStatus.label}</span><span>{content.length} 字符</span><button className="save-secondary" type="button" disabled={savePhase==="saving"||!isDirty} onClick={saveCurrent}>保存</button>{followingPosition&&<button type="button" disabled={savePhase==="saving"||!content.trim()||(step==="topics"&&!selectedTopic.trim())||(step==="volumes"&&!firstVolumeOutline.trim())||Boolean(instructionDirty)} onClick={saveAndAdvance}>{nextActionLabel}</button>}{step==="drafts"&&content.trim()&&<button className="publish-toggle" type="button" disabled={savePhase==="saving"||isDirty} onClick={()=>setPublished(currentChapterStatus!=="published")}>{currentChapterStatus==="published"?"撤回发布标记":"标记为已发布"}</button>}</div></div><textarea key={positionKey} value={content} onChange={(event) => changeContent(event.target.value)} rows={22} placeholder={step==="drafts"?"Codex正文读取后会显示在这里，也可以手动粘贴…":"在这里粘贴生成结果…"} />{message&&<div className="editor-actions"><span>{message}</span></div>}</section></div>
+        <section className="editor-panel"><div className="panel-title"><h3>{step==="drafts"?`第${chapter}章正文（可手动编辑）`:"粘贴 Gemini 返回内容"}</h3><div className="panel-title-actions"><span className={`save-status ${saveStatus.kind}`}>{saveStatus.label}</span><span>{content.length} 字符</span><button className="save-secondary" type="button" disabled={savePhase==="saving"||!isDirty} onClick={saveCurrent}>保存</button>{followingPosition&&<button type="button" disabled={savePhase==="saving"||!content.trim()||(step==="topics"&&!selectedTopicComplete)||(step==="volumes"&&!firstVolumeOutline.trim())||Boolean(instructionDirty)} onClick={saveAndAdvance}>{nextActionLabel}</button>}{step==="drafts"&&content.trim()&&<button className="publish-toggle" type="button" disabled={savePhase==="saving"||isDirty} onClick={()=>setPublished(currentChapterStatus!=="published")}>{currentChapterStatus==="published"?"撤回发布标记":"标记为已发布"}</button>}</div></div><textarea key={positionKey} value={content} onChange={(event) => changeContent(event.target.value)} rows={22} placeholder={step==="drafts"?"Codex正文读取后会显示在这里，也可以手动粘贴…":"在这里粘贴生成结果…"} />{message&&<div className="editor-actions"><span>{message}</span></div>}</section></div>
       <ContentHistory versions={relevantVersions} restoringId={restoringVersionId} onRestore={restoreVersion} />
       <details className="danger-zone"><summary>删除小说</summary><button type="button" onClick={async () => { const confirmation = window.prompt(`请输入小说名称：${initial.novel.name}`); if (!confirmation) return; const result = await deleteNovelAction({ novelId: String(initial.novel.id), confirmation }); if (result.ok) router.push("/novels"); else setMessage(result.error); }}>删除整个项目</button></details>
+      </div>
     </section>
   </main>;
 }

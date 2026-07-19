@@ -64,6 +64,37 @@ npm.cmd run dev
 
 数据库保存和 Codex 文件同步分别报告结果。若看到“内容已保存，但 Codex 目录同步失败”，内容已经安全写入数据库，可以在正文面板重新同步。
 
+## Codex 自动生成第 2–5 步
+
+第一步保存并确认最终选题后，工作区会出现“自动生成第 2–5 步”。手动模式仍然是默认模式，自动任务不会替换原有编辑、保存和历史恢复入口。
+
+1. 点击“创建自动生成任务”。
+2. 双击界面所示任务目录中的 `run-pipeline.cmd`，或复制 PowerShell 命令运行。
+3. 脚本在浏览器之外串行执行 14 次独立 `codex exec`。可以关闭浏览器，脚本会继续运行。
+4. 重新打开工作区后，自动面板每 3 秒读取一次 `manifest.json`；完成输出经范围和结构校验后，使用 repository 事务化、幂等地导入 SQLite。
+5. 可请求“节点后暂停”、继续、单独重试失败节点、终止，或从指定节点重新生成。上游正式内容变化时，旧结果会标记为 `stale`，不会静默导入。
+
+任务保存在：
+
+```text
+data/novel-projects/<小说目录>/自动生成/<run-id>/
+├─ manifest.json
+├─ control.json
+├─ inputs/
+├─ outputs/
+├─ logs/
+├─ run-pipeline.ps1
+└─ run-pipeline.cmd
+```
+
+运行器通过标准输入把单节点任务交给 Codex，并使用以下非交互调用形式：
+
+```text
+codex exec -C <run-dir> --sandbox read-only --skip-git-repo-check --output-last-message <temp-output> -
+```
+
+Codex 只读任务资料，不直接操作数据库；脚本检查退出状态、保留日志，并将完整输出原子重命名后再供 DropMind 读取。如 `codex` 不在 `PATH`，可以先设置 `CODEX_CLI_PATH` 为 `codex.exe` 的完整路径。
+
 ## 检查
 
 ```powershell

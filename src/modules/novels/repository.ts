@@ -235,6 +235,45 @@ export function createNovelRepository(sqlite: Database.Database) {
       })();
     },
 
+    importAutomationNode(input: { novelId: string; kind: "volumes" | "settings" | "units" | "outlines"; startChapter: number | null; content: string; firstVolumeOutline?: string }) {
+      sqlite.transaction(() => {
+        const timestamp = now();
+        const content = input.content.trim();
+        if (!content) throw new Error("自动生成结果为空");
+
+        if (input.kind === "volumes" || input.kind === "settings") {
+          const key = input.kind;
+          versionPrevious(input.novelId, "step", key, "novel_steps", "novel_id=? and key=?", [input.novelId, key], content);
+          sqlite.prepare(`insert into novel_steps (id,novel_id,key,content,is_draft,created_at,updated_at)
+            values (?,?,?,?,?,?,?) on conflict(novel_id,key) do update set content=excluded.content,is_draft=0,updated_at=excluded.updated_at`)
+            .run(randomUUID(), input.novelId, key, content, 0, timestamp, timestamp);
+
+          if (input.kind === "volumes") {
+            const firstVolumeOutline = String(input.firstVolumeOutline ?? content).trim();
+            versionPrevious(input.novelId, "novel_field", "firstVolumeOutline", "novels", "id=?", [input.novelId], firstVolumeOutline, "first_volume_outline");
+            sqlite.prepare("update novels set first_volume_outline=?,updated_at=? where id=?").run(firstVolumeOutline, timestamp, input.novelId);
+          }
+        } else {
+          const startChapter = input.startChapter;
+          if (startChapter === null || ![1, 11, 21, 31, 41, 51].includes(startChapter)) throw new Error("自动生成批次范围无效");
+          if (input.kind === "units") {
+            versionPrevious(input.novelId, "story_unit", String(startChapter), "story_units", "novel_id=? and start_chapter=?", [input.novelId, startChapter], content);
+            sqlite.prepare(`insert into story_units (id,novel_id,start_chapter,end_chapter,content,is_draft,created_at,updated_at)
+              values (?,?,?,?,?,?,?,?) on conflict(novel_id,start_chapter) do update set content=excluded.content,is_draft=0,updated_at=excluded.updated_at`)
+              .run(randomUUID(), input.novelId, startChapter, startChapter + 9, content, 0, timestamp, timestamp);
+          } else {
+            versionPrevious(input.novelId, "outline_batch", String(startChapter), "chapter_outlines", "novel_id=? and chapter_number=?", [input.novelId, startChapter], content);
+            const save = sqlite.prepare(`insert into chapter_outlines (id,novel_id,chapter_number,content,is_draft,created_at,updated_at)
+              values (?,?,?,?,?,?,?) on conflict(novel_id,chapter_number) do update set content=excluded.content,is_draft=0,updated_at=excluded.updated_at`);
+            for (let chapterNumber = startChapter; chapterNumber < startChapter + 10; chapterNumber += 1) {
+              save.run(randomUUID(), input.novelId, chapterNumber, content, 0, timestamp, timestamp);
+            }
+          }
+        }
+        touch(input.novelId);
+      })();
+    },
+
     updateChapterStatus(novelId: string, chapterNumber: number, status: "saved" | "published") {
       const result = sqlite.prepare("update chapters set status=?,updated_at=? where novel_id=? and chapter_number=? and trim(content)<>''")
         .run(status, now(), novelId, chapterNumber);
