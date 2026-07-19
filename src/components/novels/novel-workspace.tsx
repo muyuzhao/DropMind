@@ -8,6 +8,7 @@ import type { AutomationManifest } from "@/modules/novels/automation";
 import type { ChapterAutomationManifest } from "@/modules/novels/chapter-automation";
 import type { CodexChapterState } from "@/modules/novels/codex-project";
 import type { ContentVersionData, NovelWorkspaceData } from "@/modules/novels/types";
+import type { NovelDeliveryState } from "@/modules/novels/delivery";
 import { buildCoverPrompt, buildPromptContext } from "@/modules/novels/prompts";
 import { formatSelectedTopic, parseSelectedTopic } from "@/modules/novels/selected-topic";
 import { CODEX_DRAFT_COMMAND } from "@/modules/novels/structured-prompts";
@@ -21,6 +22,7 @@ import { AutomationPanel } from "./automation-panel";
 import { AutomationTaskCenter, type AutomationTaskView } from "./automation-task-center";
 import { CodexProjectPanel } from "./codex-project-panel";
 import { ContentHistory } from "./content-history";
+import { FanqieDeliveryPanel } from "./fanqie-delivery-panel";
 import { WorkflowSidebar } from "./workflow-sidebar";
 import { WorkspaceConfirmDialog } from "./workspace-overlays";
 
@@ -97,7 +99,7 @@ function download(content: string, filename: string, type: string) {
   const url = URL.createObjectURL(new Blob([content], { type })); const anchor = document.createElement("a"); anchor.href = url; anchor.download = filename; anchor.click(); URL.revokeObjectURL(url);
 }
 
-export function NovelWorkspace({ initial, schemes, codexProject }: { initial: NovelWorkspaceData; schemes:Array<{id:string;name:string}>; codexProject:{projectDir:string;folderName:string;exists:boolean} }) {
+export function NovelWorkspace({ initial, schemes, codexProject, delivery, deliveryExtensionDir }: { initial: NovelWorkspaceData; schemes:Array<{id:string;name:string}>; codexProject:{projectDir:string;folderName:string;exists:boolean}; delivery:NovelDeliveryState; deliveryExtensionDir:string }) {
   const router = useRouter();
   const initialSelectedTopic = parseSelectedTopic(String(initial.novel.selectedTopic ?? ""));
   const initialPosition = normalizeWorkPosition({ step: String(initial.novel.currentStep) as StepKey, rangeStart: Number(initial.novel.currentRangeStart ?? 1), chapter: Number(initial.novel.currentChapter ?? 1) });
@@ -702,6 +704,8 @@ export function NovelWorkspace({ initial, schemes, codexProject }: { initial: No
       {step === "units" && <label className="novel-inline-field">本卷大纲<textarea value={firstVolumeOutline} onChange={(event) => setFirstVolumeOutline(event.target.value)} rows={6} placeholder="粘贴当前卷的大纲，保存后六个批次会自动复用" /><button type="button" disabled={firstVolumeOutline===savedFirstVolumeOutline} onClick={()=>saveNovelField("firstVolumeOutline",firstVolumeOutline,"已保存本卷大纲")}>保存本卷大纲</button></label>}
       {step !== "drafts" && customInstructionField}
       {step !== "drafts" && <section className="automatic-context"><strong>本步骤自动加入</strong><div>{promptInfo.automaticLabels.map((label) => <span key={label}>{label}</span>)}</div></section>}
+      {step === "tags" && <FanqieDeliveryPanel mode="setup" novelId={String(initial.novel.id)} novelName={String(initial.novel.name)} chapterNumber={chapter} chapterTitle={chapterTitle} chapterContent={content} chapterDirty={isDirty} initialState={delivery} extensionDirectory={deliveryExtensionDir} />}
+      {step === "drafts" && <FanqieDeliveryPanel mode="chapter" novelId={String(initial.novel.id)} novelName={String(initial.novel.name)} chapterNumber={chapter} chapterTitle={savedChapterTitle} chapterContent={savedContent} chapterDirty={isDirty} initialState={delivery} extensionDirectory={deliveryExtensionDir} />}
       <div className={`editor-grid ${step === "drafts" ? "draft-editor-grid" : ""}`}>{promptEditor}{resultEditor}</div>
       {step === "drafts" && <><details className="chapter-selector-details"><summary>选择其他章节 · 当前第 {chapter} 章</summary><ChapterSelector mode="chapter" value={chapter} onChange={(value) => openPosition({ ...position, chapter: value })} states={chapterStates} /></details><CodexProjectPanel chapter={chapter} project={codexProject} state={codexState} message={message} onSync={syncCodexProject} onPrepare={prepareCodexTask} onImport={importCodexChapter} onRefresh={refreshCodexState} onCopyPath={async () => { try { await navigator.clipboard.writeText(codexProject.projectDir); setMessage("项目路径已复制"); } catch { setMessage("复制失败，请手动复制路径"); } }} />{promptSourceBar}{customInstructionField}<section className="automatic-context"><strong>本步骤自动加入</strong><div>{promptInfo.automaticLabels.map((label) => <span key={label}>{label}</span>)}</div></section></>}
       <ContentHistory versions={relevantVersions} restoringId={restoringVersionId} onRestore={requestRestoreVersion} />

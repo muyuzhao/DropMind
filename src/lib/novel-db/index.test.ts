@@ -14,6 +14,7 @@ describe("initializeNovelDatabase", () => {
     const names = sqlite.prepare("select name from sqlite_master where type = 'table'").all() as Array<{ name: string }>;
     expect(names.map((row) => row.name)).toEqual(expect.arrayContaining([
       "novels", "prompt_templates", "prompt_schemes", "prompt_scheme_templates", "novel_steps", "story_units", "chapter_outlines", "chapters", "content_versions", "app_migrations",
+      "delivery_settings", "delivery_targets", "delivery_jobs",
     ]));
   });
 
@@ -60,8 +61,10 @@ describe("initializeNovelDatabase", () => {
       expect(sqlite.prepare("select title,content from chapters where id=?").get("chapter-1"))
         .toMatchObject({ title: "", content: "迁移前正文" });
       const backups = fs.readdirSync(path.join(directory, "backups"));
-      expect(backups).toHaveLength(1);
-      const backup = new Database(path.join(directory, "backups", backups[0]), { readonly: true });
+      const titleBackup = backups.find((name) => name.startsWith("pre-chapter-titles-v1-"));
+      expect(titleBackup).toBeTruthy();
+      expect(backups.some((name) => name.startsWith("pre-fanqie-delivery-v1-"))).toBe(true);
+      const backup = new Database(path.join(directory, "backups", titleBackup!), { readonly: true });
       expect(backup.prepare("select content from chapters where id=?").get("chapter-1"))
         .toMatchObject({ content: "迁移前正文" });
       backup.close();

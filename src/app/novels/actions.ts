@@ -6,6 +6,8 @@ import { createNovelBackup, exportVolumeText, parseNovelBackup } from "@/modules
 import { createAutomationRun, getLatestAutomationRun, importCompletedAutomationNodes, listAutomationRuns, readAutomationArtifact, readAutomationManifest, reconcileAutomationStaleness, recoverInterruptedAutomationRun, refreshAutomationRunnerFiles, requestAutomationControl, restartAutomationFromNode, seedAutomationRunFromWorkspace } from "@/modules/novels/automation";
 import { createChapterAutomationRun, getLatestChapterAutomationRun, importCompletedChapterAutomationRun, listChapterAutomationRuns, readChapterAutomationArtifact, readChapterAutomationManifest, reconcileChapterAutomationStaleness, recoverInterruptedChapterAutomationRun, refreshChapterAutomationRunnerFiles, requestChapterAutomationControl } from "@/modules/novels/chapter-automation";
 import { inspectCodexChapterState, prepareCodexChapterTask, readCodexChapter, syncNovelCodexProject, writeCodexChapter } from "@/modules/novels/codex-project";
+import { deliveryRepository } from "@/modules/novels/delivery";
+import { cancelDeliverySchema, queueDeliverySchema, saveDeliveryTargetSchema } from "@/modules/novels/delivery-schemas";
 import { novelRepository } from "@/modules/novels/repository";
 import {
   chapterTaskSchema, createChapterAutomationSchema, createNovelSchema, createSchemeSchema, idSchema, importCodexChapterSchema,
@@ -153,6 +155,37 @@ export async function saveChapterAction(input: unknown) {
 
 export async function updateChapterStatusAction(input: unknown) {
   try { const value = updateChapterStatusSchema.parse(input); novelRepository.updateChapterStatus(value.novelId, value.chapterNumber, value.status); revalidatePath(`/novels/${value.novelId}`); revalidatePath("/novels"); return { ok: true as const }; } catch (error) { return failure(error); }
+}
+
+export async function getNovelDeliveryStateAction(input: unknown) {
+  try { const novelId = idSchema.parse(input); return { ok: true as const, state: deliveryRepository.getNovelState(novelId) }; } catch (error) { return failure(error); }
+}
+
+export async function saveDeliveryTargetAction(input: unknown) {
+  try {
+    const value = saveDeliveryTargetSchema.parse(input);
+    const target = deliveryRepository.saveTarget(value);
+    revalidatePath(`/novels/${value.novelId}`);
+    return { ok: true as const, target };
+  } catch (error) { return failure(error); }
+}
+
+export async function queueChapterDeliveryAction(input: unknown) {
+  try {
+    const value = queueDeliverySchema.parse(input);
+    const job = deliveryRepository.queueChapter(value.novelId, value.chapterNumber);
+    revalidatePath(`/novels/${value.novelId}`);
+    return { ok: true as const, job };
+  } catch (error) { return failure(error); }
+}
+
+export async function cancelChapterDeliveryAction(input: unknown) {
+  try {
+    const value = cancelDeliverySchema.parse(input);
+    const job = deliveryRepository.cancelJob(value.novelId, value.jobId);
+    revalidatePath(`/novels/${value.novelId}`);
+    return { ok: true as const, job };
+  } catch (error) { return failure(error); }
 }
 
 export async function updateTemplateAction(input: unknown) {

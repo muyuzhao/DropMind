@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "DropMind 番茄投递",
+  "version": "0.1.0",
+  "description": "从本机 DropMind 领取章节并填入番茄作家后台，最终提交由作者确认。",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "DropMind 番茄投递",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://fanqienovel.com/main/writer/*", "https://*.fanqienovel.com/main/writer/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
