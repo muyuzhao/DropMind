@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { createNovelBackup, exportVolumeText, parseNovelBackup } from "@/modules/novels/backup";
+import { createAutomationRun, getLatestAutomationRun, importCompletedAutomationNodes, listAutomationRuns, readAutomationArtifact, readAutomationManifest, reconcileAutomationStaleness, recoverInterruptedAutomationRun, refreshAutomationRunnerFiles, requestAutomationControl, restartAutomationFromNode } from "@/modules/novels/automation";
 import { inspectCodexChapterState, prepareCodexChapterTask, readCodexChapter, syncNovelCodexProject, writeCodexChapter } from "@/modules/novels/codex-project";
 import { novelRepository } from "@/modules/novels/repository";
 import {
@@ -37,6 +38,14 @@ function syncWarning(novelId: string) {
   } catch (error) {
     return `内容已保存，但 Codex 目录同步失败：${errorMessage(error)}`;
   }
+}
+
+function automationRun(novelId: string, runId: string) {
+  const workspace = workspaceFor(novelId);
+  const run = listAutomationRuns(workspace).find((item) => item.manifest.runId === runId);
+  if (!run) throw new Error("自动生成任务不存在");
+  refreshAutomationRunnerFiles(run.runDir, run.manifest);
+  return { workspace, ...run };
 }
 
 export async function createNovelAction(input: unknown) {
@@ -172,6 +181,82 @@ export async function importCodexChapterAction(input: unknown) {
     novelRepository.importCodexChapter(value.novelId, value.chapterNumber, result.content, value.expectedUpdatedAt, value.expectedDatabaseContent);
     revalidatePath(`/novels/${value.novelId}`);
     return { ok: true as const, content: result.content, filePath: result.filePath };
+  } catch (error) { return failure(error); }
+}
+
+export async function createAutomationRunAction(input: unknown) {
+  try {
+    const novelId = idSchema.parse(input);
+    const workspace = workspaceFor(novelId);
+    const latest = getLatestAutomationRun(workspace);
+    if (latest && (["pending", "running", "paused"].includes(latest.manifest.status) || latest.manifest.nodes.some((node) => node.status === "completed" && !node.imported))) throw new Error("已有未结束或待导入的自动生成任务，请继续处理后再创建新任务");
+    const result = createAutomationRun(workspace);
+    revalidatePath(`/novels/${novelId}`);
+    return { ok: true as const, runDir: result.runDir, manifest: result.manifest };
+  } catch (error) { return failure(error); }
+}
+
+export async function inspectAutomationRunAction(input: unknown, options: { importPaused?: boolean } = {}) {
+  try {
+    const novelId = idSchema.parse(input);
+    let workspace = workspaceFor(novelId);
+    const latest = getLatestAutomationRun(workspace);
+    if (!latest) return { ok: true as const, run: null };
+    refreshAutomationRunnerFiles(latest.runDir, latest.manifest);
+    let importedCount = 0;
+    // The runner owns manifest writes while active. Import only at a stable boundary
+    // so runner status updates cannot overwrite imported hashes or refreshed snapshots.
+    if (latest.manifest.status !== "running" && latest.manifest.status !== "pending" && (latest.manifest.status !== "paused" || options.importPaused)) {
+      reconcileAutomationStaleness(latest.runDir, latest.manifest, workspace);
+      importedCount = importCompletedAutomationNodes(latest.runDir, latest.manifest, workspace, novelRepository);
+    }
+    if (importedCount) {
+      workspace = workspaceFor(novelId);
+      revalidatePath(`/novels/${novelId}`);
+    }
+    const manifest = readAutomationManifest(latest.runDir);
+    return { ok: true as const, run: { runDir: latest.runDir, manifest, importedCount } };
+  } catch (error) { return failure(error); }
+}
+
+export async function controlAutomationRunAction(input: { novelId: unknown; runId: unknown; action: unknown; nodeId?: unknown }) {
+  try {
+    const novelId = idSchema.parse(input.novelId);
+    if (typeof input.runId !== "string" || !input.runId.trim()) throw new Error("任务编号无效");
+    if (input.action !== "run" && input.action !== "pause" && input.action !== "terminate" && input.action !== "retry") throw new Error("任务操作无效");
+    const run = automationRun(novelId, input.runId);
+    const result = input.action === "retry"
+      ? requestAutomationControl(run.runDir, "run", { mode: "retry-node", targetNodeId: typeof input.nodeId === "string" ? input.nodeId : null })
+      : requestAutomationControl(run.runDir, input.action);
+    return { ok: true as const, manifest: result.manifest };
+  } catch (error) { return failure(error); }
+}
+
+export async function recoverInterruptedAutomationRunAction(input: { novelId: unknown; runId: unknown }) {
+  try {
+    const novelId = idSchema.parse(input.novelId);
+    if (typeof input.runId !== "string" || !input.runId.trim()) throw new Error("任务编号无效");
+    const run = automationRun(novelId, input.runId);
+    return { ok: true as const, manifest: recoverInterruptedAutomationRun(run.runDir) };
+  } catch (error) { return failure(error); }
+}
+
+export async function restartAutomationFromNodeAction(input: { novelId: unknown; runId: unknown; nodeId: unknown }) {
+  try {
+    const novelId = idSchema.parse(input.novelId);
+    if (typeof input.runId !== "string" || typeof input.nodeId !== "string") throw new Error("任务参数无效");
+    const run = automationRun(novelId, input.runId);
+    const result = restartAutomationFromNode(run.runDir, input.nodeId, workspaceFor(novelId));
+    return { ok: true as const, manifest: result.manifest };
+  } catch (error) { return failure(error); }
+}
+
+export async function previewAutomationArtifactAction(input: { novelId: unknown; runId: unknown; nodeId: unknown; artifact: unknown }) {
+  try {
+    const novelId = idSchema.parse(input.novelId);
+    if (typeof input.runId !== "string" || typeof input.nodeId !== "string" || (input.artifact !== "output" && input.artifact !== "log")) throw new Error("任务文件参数无效");
+    const run = automationRun(novelId, input.runId);
+    return { ok: true as const, ...readAutomationArtifact(run.runDir, input.nodeId, input.artifact) };
   } catch (error) { return failure(error); }
 }
 
