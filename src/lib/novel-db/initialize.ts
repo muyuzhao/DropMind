@@ -51,6 +51,20 @@ CREATE TABLE IF NOT EXISTS content_versions (
   content_type TEXT NOT NULL, content_key TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS content_version_lookup ON content_versions(novel_id, content_type, content_key);
+CREATE TABLE IF NOT EXISTS novel_continuity_states (
+  novel_id TEXT PRIMARY KEY REFERENCES novels(id) ON DELETE CASCADE,
+  through_chapter INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 0,
+  content TEXT NOT NULL DEFAULT '', source_run_id TEXT,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS chapter_continuity_events (
+  id TEXT PRIMARY KEY, novel_id TEXT NOT NULL REFERENCES novels(id) ON DELETE CASCADE,
+  chapter_number INTEGER NOT NULL, run_id TEXT NOT NULL, chapter_hash TEXT NOT NULL,
+  summary TEXT NOT NULL, state_content TEXT NOT NULL,
+  invalidated_at INTEGER, created_at INTEGER NOT NULL,
+  UNIQUE(novel_id, run_id, chapter_number)
+);
+CREATE INDEX IF NOT EXISTS continuity_event_lookup ON chapter_continuity_events(novel_id, chapter_number, invalidated_at, created_at);
 `;
 
 export function initializeNovelDatabase(sqlite: Database.Database) {

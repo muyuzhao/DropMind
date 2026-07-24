@@ -26,6 +26,8 @@ describe("novel exports", () => {
     const json = JSON.stringify({ format: "dropmind-novel", version: 1, exportedAt: new Date().toISOString(), workspace });
     const parsed = parseNovelBackup(json).workspace;
     expect(parsed.contentVersions).toEqual([]);
+    expect(parsed.continuityState).toBeNull();
+    expect(parsed.continuityEvents).toEqual([]);
     expect(parsed.chapters[0].title).toBe("");
     expect(parsed.templates).toHaveLength(8);
     expect(parsed.templates.find((row) => row.key === "tags")?.template).toContain("作品标签生成指南");

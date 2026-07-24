@@ -1,12 +1,12 @@
 import Database from "better-sqlite3";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promptTemplateKeyValues, type ChapterStatus, type PromptTemplateKey, type StepKey } from "../../lib/novel-db/schema";
 import { getNovelSqlite } from "../../lib/novel-db";
 import { stripLegacyPlaceholders } from "./structured-prompts";
 import { DEFAULT_PROMPT_TEMPLATES } from "./templates";
 import { normalizeChapterTitle } from "./chapter-title";
 import type { NovelBackupWorkspace } from "./backup";
-import type { ChapterData, ChapterOutlineData, ContentVersionData, NovelData, NovelListItem, NovelStepData, NovelWorkspaceData, PromptSchemeData, PromptSchemeSummary, PromptTemplateData, StoryUnitData, VersionedContentType } from "./types";
+import type { ChapterContinuityEventData, ChapterData, ChapterOutlineData, ContentVersionData, NovelContinuityStateData, NovelData, NovelListItem, NovelStepData, NovelWorkspaceData, PromptSchemeData, PromptSchemeSummary, PromptTemplateData, StoryUnitData, VersionedContentType } from "./types";
 
 type CreateNovelInput = { name: string; referenceTitle: string; referenceSummary: string };
 type Row = Record<string, unknown>;
@@ -15,6 +15,12 @@ type NovelRecord = NovelData;
 function camel(row: Row) {
   return Object.fromEntries(Object.entries(row).map(([key, value]) => [key.replace(/_([a-z])/g, (_, c) => c.toUpperCase()), value]));
 }
+
+function digest(value: string) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+const EMPTY_CONTINUITY = "# 正文连续性状态\n\n> 截至第0章：尚无已确认正文。\n";
 
 export function createNovelRepository(sqlite: Database.Database) {
   const now = () => Date.now();
@@ -31,6 +37,21 @@ export function createNovelRepository(sqlite: Database.Database) {
   const ensureNovelPublishTemplates = (novelId: string) => {
     const insert = sqlite.prepare("insert or ignore into prompt_templates (id,novel_id,key,template,created_at,updated_at) values (?,?,?,?,?,?)");
     for (const key of ["tags", "cover"] as const) insert.run(randomUUID(), novelId, key, DEFAULT_PROMPT_TEMPLATES[key], now(), now());
+  };
+  const invalidateContinuityFrom = (novelId: string, chapterNumber: number) => {
+    const timestamp = now();
+    const invalidated = sqlite.prepare("update chapter_continuity_events set invalidated_at=? where novel_id=? and chapter_number>=? and invalidated_at is null")
+      .run(timestamp, novelId, chapterNumber);
+    const state = sqlite.prepare("select through_chapter from novel_continuity_states where novel_id=?").get(novelId) as { through_chapter: number } | undefined;
+    if (!invalidated.changes && (!state || state.through_chapter < chapterNumber)) return;
+    const previous = sqlite.prepare(`select chapter_number,state_content,run_id from chapter_continuity_events
+      where novel_id=? and chapter_number<? and invalidated_at is null order by chapter_number desc,created_at desc limit 1`)
+      .get(novelId, chapterNumber) as { chapter_number: number; state_content: string; run_id: string } | undefined;
+    const currentRevision = Number((sqlite.prepare("select revision from novel_continuity_states where novel_id=?").get(novelId) as { revision: number } | undefined)?.revision ?? 0);
+    sqlite.prepare(`insert into novel_continuity_states (novel_id,through_chapter,revision,content,source_run_id,created_at,updated_at)
+      values (?,?,?,?,?,?,?) on conflict(novel_id) do update set through_chapter=excluded.through_chapter,revision=excluded.revision,
+      content=excluded.content,source_run_id=excluded.source_run_id,updated_at=excluded.updated_at`)
+      .run(novelId, previous?.chapter_number ?? 0, currentRevision + 1, previous?.state_content ?? EMPTY_CONTINUITY, previous?.run_id ?? null, timestamp, timestamp);
   };
 
   function versionPrevious(novelId: string, contentType: VersionedContentType, contentKey: string, table: string, where: string, args: unknown[], nextContent: string, contentColumn = "content") {
@@ -91,6 +112,17 @@ export function createNovelRepository(sqlite: Database.Database) {
 
         const insertVersion = sqlite.prepare("insert into content_versions (id,novel_id,content_type,content_key,content,created_at) values (?,?,?,?,?,?)");
         for (const row of workspace.contentVersions) insertVersion.run(randomUUID(), id, row.contentType, row.contentKey, row.content, row.createdAt);
+
+        if (workspace.continuityState) {
+          const state = workspace.continuityState;
+          sqlite.prepare(`insert into novel_continuity_states (novel_id,through_chapter,revision,content,source_run_id,created_at,updated_at)
+            values (?,?,?,?,?,?,?)`).run(id, state.throughChapter, state.revision, state.content, state.sourceRunId, state.createdAt, state.updatedAt);
+        }
+        const insertContinuityEvent = sqlite.prepare(`insert into chapter_continuity_events
+          (id,novel_id,chapter_number,run_id,chapter_hash,summary,state_content,invalidated_at,created_at) values (?,?,?,?,?,?,?,?,?)`);
+        for (const row of workspace.continuityEvents) {
+          insertContinuityEvent.run(randomUUID(), id, row.chapterNumber, row.runId, row.chapterHash, row.summary, row.stateContent, row.invalidatedAt, row.createdAt);
+        }
       })();
 
       return one<NovelRecord>("select * from novels where id = ?", id)!;
@@ -159,6 +191,8 @@ export function createNovelRepository(sqlite: Database.Database) {
         chapterOutlines: all<ChapterOutlineData>("select * from chapter_outlines where novel_id = ? order by chapter_number", id),
         chapters: all<ChapterData>("select * from chapters where novel_id = ? order by chapter_number", id),
         contentVersions: all<ContentVersionData>("select * from content_versions where novel_id = ? order by created_at desc", id),
+        continuityState: one<NovelContinuityStateData>("select * from novel_continuity_states where novel_id = ?", id),
+        continuityEvents: all<ChapterContinuityEventData>("select * from chapter_continuity_events where novel_id = ? order by chapter_number,created_at", id),
       } satisfies NovelWorkspaceData;
     },
 
@@ -229,9 +263,10 @@ export function createNovelRepository(sqlite: Database.Database) {
 
     saveChapter(novelId: string, chapterNumber: number, content: string, status: ChapterStatus, draft: boolean, title?: string) {
       sqlite.transaction(() => {
-        const current = sqlite.prepare("select title from chapters where novel_id=? and chapter_number=?").get(novelId, chapterNumber) as { title: string } | undefined;
+        const current = sqlite.prepare("select title,content from chapters where novel_id=? and chapter_number=?").get(novelId, chapterNumber) as { title: string; content: string } | undefined;
         const nextTitle = title === undefined ? String(current?.title ?? "") : normalizeChapterTitle(title);
         if (!draft) versionPrevious(novelId, "chapter", String(chapterNumber), "chapters", "novel_id=? and chapter_number=?", [novelId, chapterNumber], content);
+        if ((current?.content ?? "") !== content) invalidateContinuityFrom(novelId, chapterNumber);
         const timestamp = now();
         sqlite.prepare(`insert into chapters (id,novel_id,chapter_number,title,content,status,is_draft,created_at,updated_at)
           values (?,?,?,?,?,?,?,?,?) on conflict(novel_id,chapter_number) do update set title=excluded.title,content=excluded.content,status=excluded.status,is_draft=excluded.is_draft,updated_at=excluded.updated_at`)
@@ -244,6 +279,7 @@ export function createNovelRepository(sqlite: Database.Database) {
         const current = sqlite.prepare("select title,content,updated_at from chapters where novel_id=? and chapter_number=?").get(novelId, chapterNumber) as { title: string; content: string; updated_at: number } | undefined;
         if ((current?.updated_at ?? null) !== expectedUpdatedAt || (current?.title ?? "") !== expectedDatabaseTitle || (current?.content ?? "") !== expectedDatabaseContent) throw new Error("工作台中的章节标题或正文已在其他窗口更新，请重新读取 Codex 正文后再导入");
         versionPrevious(novelId, "chapter", String(chapterNumber), "chapters", "novel_id=? and chapter_number=?", [novelId, chapterNumber], content);
+        if ((current?.content ?? "") !== content) invalidateContinuityFrom(novelId, chapterNumber);
         const timestamp = now();
         sqlite.prepare(`insert into chapters (id,novel_id,chapter_number,title,content,status,is_draft,created_at,updated_at)
           values (?,?,?,?,?,?,?,?,?) on conflict(novel_id,chapter_number) do update set title=excluded.title,content=excluded.content,status=excluded.status,is_draft=excluded.is_draft,updated_at=excluded.updated_at`)
@@ -252,7 +288,20 @@ export function createNovelRepository(sqlite: Database.Database) {
       })();
     },
 
-    importAutomatedChapters(input: { novelId: string; chapters: Array<{ chapterNumber: number; title: string; content: string; expectedUpdatedAt: number | null; expectedDatabaseTitle?: string; expectedDatabaseContent: string }> }) {
+    importAutomatedChapters(input: {
+      novelId: string;
+      runId?: string;
+      chapters: Array<{
+        chapterNumber: number;
+        title: string;
+        content: string;
+        expectedUpdatedAt: number | null;
+        expectedDatabaseTitle?: string;
+        expectedDatabaseContent: string;
+        continuitySummary?: string;
+        continuityState?: string;
+      }>;
+    }) {
       return sqlite.transaction(() => {
         const rows = input.chapters.map((chapter) => {
           const current = sqlite.prepare("select title,content,status,updated_at from chapters where novel_id=? and chapter_number=?")
@@ -272,6 +321,29 @@ export function createNovelRepository(sqlite: Database.Database) {
           sqlite.prepare(`insert into chapters (id,novel_id,chapter_number,title,content,status,is_draft,created_at,updated_at)
             values (?,?,?,?,?,?,?,?,?) on conflict(novel_id,chapter_number) do update set title=excluded.title,content=excluded.content,status=excluded.status,is_draft=excluded.is_draft,updated_at=excluded.updated_at`)
             .run(randomUUID(), input.novelId, chapter.chapterNumber, chapter.title, chapter.content, "saved", 0, timestamp, timestamp);
+        }
+        if (input.runId && input.chapters.every((chapter) => chapter.continuitySummary && chapter.continuityState)) {
+          const startChapter = Math.min(...input.chapters.map((chapter) => chapter.chapterNumber));
+          const finalChapter = Math.max(...input.chapters.map((chapter) => chapter.chapterNumber));
+          const finalState = input.chapters.find((chapter) => chapter.chapterNumber === finalChapter)!.continuityState!;
+          const timestamp = now();
+          sqlite.prepare("update chapter_continuity_events set invalidated_at=? where novel_id=? and chapter_number>=? and invalidated_at is null and run_id<>?")
+            .run(timestamp, input.novelId, startChapter, input.runId);
+          const insertEvent = sqlite.prepare(`insert or ignore into chapter_continuity_events
+            (id,novel_id,chapter_number,run_id,chapter_hash,summary,state_content,invalidated_at,created_at)
+            values (?,?,?,?,?,?,?,?,?)`);
+          for (const chapter of input.chapters) {
+            insertEvent.run(randomUUID(), input.novelId, chapter.chapterNumber, input.runId, digest(chapter.content), chapter.continuitySummary!, chapter.continuityState!, null, timestamp);
+          }
+          const currentState = sqlite.prepare("select revision,source_run_id,through_chapter,content from novel_continuity_states where novel_id=?")
+            .get(input.novelId) as { revision: number; source_run_id: string | null; through_chapter: number; content: string } | undefined;
+          const alreadyPromoted = currentState?.source_run_id === input.runId && currentState.through_chapter === finalChapter && currentState.content === finalState;
+          if (!alreadyPromoted) {
+            sqlite.prepare(`insert into novel_continuity_states (novel_id,through_chapter,revision,content,source_run_id,created_at,updated_at)
+              values (?,?,?,?,?,?,?) on conflict(novel_id) do update set through_chapter=excluded.through_chapter,revision=excluded.revision,
+              content=excluded.content,source_run_id=excluded.source_run_id,updated_at=excluded.updated_at`)
+              .run(input.novelId, finalChapter, Number(currentState?.revision ?? 0) + 1, finalState, input.runId, timestamp, timestamp);
+          }
         }
         if (changedRows.length) touch(input.novelId);
         return changedRows.length;

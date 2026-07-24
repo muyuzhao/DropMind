@@ -24,6 +24,26 @@ export type ChapterOutlineData = { id: string; novelId: string; chapterNumber: n
 export type ChapterData = { id: string; novelId: string; chapterNumber: number; title: string; content: string; status: ChapterStatus; isDraft: DraftFlag; createdAt: number; updatedAt: number };
 export type VersionedContentType = "step" | "novel_field" | "story_unit" | "outline_batch" | "chapter" | "template";
 export type ContentVersionData = { id: string; novelId: string; contentType: VersionedContentType; contentKey: string; content: string; createdAt: number };
+export type NovelContinuityStateData = {
+  novelId: string;
+  throughChapter: number;
+  revision: number;
+  content: string;
+  sourceRunId: string | null;
+  createdAt: number;
+  updatedAt: number;
+};
+export type ChapterContinuityEventData = {
+  id: string;
+  novelId: string;
+  chapterNumber: number;
+  runId: string;
+  chapterHash: string;
+  summary: string;
+  stateContent: string;
+  invalidatedAt: number | null;
+  createdAt: number;
+};
 
 export type PromptSourceData = { mode: "scheme" | "custom"; schemeId: string | null; schemeName: string };
 
@@ -36,6 +56,8 @@ export type NovelWorkspaceData = {
   chapterOutlines: ChapterOutlineData[];
   chapters: ChapterData[];
   contentVersions: ContentVersionData[];
+  continuityState: NovelContinuityStateData | null;
+  continuityEvents: ChapterContinuityEventData[];
 };
 
 export type PromptSchemeSummary = { id: string; name: string; description: string; isSystem: DraftFlag; isDefault: DraftFlag; createdAt: number; updatedAt: number };

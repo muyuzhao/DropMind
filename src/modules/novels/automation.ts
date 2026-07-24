@@ -86,7 +86,7 @@ function durationSeconds(startedAt: string | null, endedAt: string | null) {
   return Number.isFinite(milliseconds) ? Math.max(0, Math.round(milliseconds / 1000)) : null;
 }
 
-export const AUTOMATION_RUNNER_VERSION = 15;
+export const AUTOMATION_RUNNER_VERSION = 16;
 
 function slash(value: string) {
   return value.replaceAll("\\", "/");
@@ -432,15 +432,43 @@ foreach ($Node in $Manifest.nodes) {
       if (-not (Test-Path -LiteralPath $OutputTemporary)) { throw "Codex CLI 未生成最终回复文件" }
       $Raw = Get-Content -LiteralPath $OutputTemporary -Raw -Encoding UTF8
       $Marker = "<!-- DROPMIND_CONTINUITY -->"
-      $Parts = $Raw -split [regex]::Escape($Marker), 2
-      $Primary = $Parts[0].Trim()
+      $IsStructuredChapter = ([string]$Manifest.kind -eq "chapters" -and [int]$Manifest.version -ge 3)
+      $ChapterEvent = ""
+      $ContinuityUpdate = ""
+      if ($IsStructuredChapter) {
+        $EventMarker = "<!-- DROPMIND_CHAPTER_EVENT -->"
+        $EventParts = $Raw -split [regex]::Escape($EventMarker), 2
+        if ($EventParts.Count -lt 2) { throw "正文输出缺少章节连续性事件标记" }
+        $StateParts = $EventParts[1] -split [regex]::Escape($Marker), 2
+        if ($StateParts.Count -lt 2) { throw "正文输出缺少连续性状态标记" }
+        $Primary = $EventParts[0].Trim()
+        $ChapterEvent = $StateParts[0].Trim()
+        $ContinuityUpdate = $StateParts[1].Trim()
+        if (-not $ChapterEvent) { throw "章节连续性事件为空" }
+        if (-not ($ContinuityUpdate.StartsWith('# 正文连续性状态'))) { throw '连续性状态必须以 Markdown 一级标题开头' }
+        if ($ContinuityUpdate.Length -gt 20000) { throw "连续性状态超过20000字符" }
+        $ChapterMarker = "<!-- DROPMIND_STATE_THROUGH: " + [string]$Node.chapterNumber + " -->"
+        if (-not ($ContinuityUpdate.Contains($ChapterMarker))) { throw "连续性状态未标明当前章节" }
+      } else {
+        $Parts = $Raw -split [regex]::Escape($Marker), 2
+        $Primary = $Parts[0].Trim()
+      }
       Assert-GeneratedOutput $Node $Primary
       Save-TextAtomic $OutputPath ($Primary + "\`n")
 
       $ContinuityPath = Join-Path $RunDir ($Manifest.continuityPath -replace '/', [IO.Path]::DirectorySeparatorChar)
-      $PreviousContinuity = if (Test-Path -LiteralPath $ContinuityPath) { Get-Content -LiteralPath $ContinuityPath -Raw -Encoding UTF8 } else { "# 连续性记录\`n" }
-      $ContinuityUpdate = if ($Parts.Count -gt 1 -and $Parts[1].Trim()) { $Parts[1].Trim() } else { "（本节点未返回结构化连续性摘要，请在后续节点结合主输出核对。）" }
-      Save-TextAtomic $ContinuityPath ($PreviousContinuity.TrimEnd() + "\`n\`n## " + $Node.label + "\`n\`n" + $ContinuityUpdate + "\`n")
+      if ($IsStructuredChapter) {
+        $ChapterFileName = "第" + ([int]$Node.chapterNumber).ToString("000") + "章.md"
+        $EventDirectory = if ($Manifest.continuityEventsDir) { [string]$Manifest.continuityEventsDir } else { "outputs/continuity-events" }
+        $StateDirectory = if ($Manifest.continuityStatesDir) { [string]$Manifest.continuityStatesDir } else { "outputs/continuity-states" }
+        Save-TextAtomic (Join-Path $RunDir (($EventDirectory + "/" + $ChapterFileName) -replace '/', [IO.Path]::DirectorySeparatorChar)) ($ChapterEvent + "\`n")
+        Save-TextAtomic (Join-Path $RunDir (($StateDirectory + "/" + $ChapterFileName) -replace '/', [IO.Path]::DirectorySeparatorChar)) ($ContinuityUpdate + "\`n")
+        Save-TextAtomic $ContinuityPath ($ContinuityUpdate + "\`n")
+      } else {
+        $PreviousContinuity = if (Test-Path -LiteralPath $ContinuityPath) { Get-Content -LiteralPath $ContinuityPath -Raw -Encoding UTF8 } else { "# 连续性记录\`n" }
+        $ContinuityUpdate = if ($Parts.Count -gt 1 -and $Parts[1].Trim()) { $Parts[1].Trim() } else { "（本节点未返回结构化连续性摘要，请在后续节点结合主输出核对。）" }
+        Save-TextAtomic $ContinuityPath ($PreviousContinuity.TrimEnd() + "\`n\`n## " + $Node.label + "\`n\`n" + $ContinuityUpdate + "\`n")
+      }
       Remove-Item -LiteralPath $OutputTemporary, $StdoutTemporary, $StderrTemporary -Force -ErrorAction SilentlyContinue
 
       $Node.status = "completed"

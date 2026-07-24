@@ -77,6 +77,11 @@ function markdown(title: string, content: string) {
   return `# ${title}\n\n${content.trim() || "（尚未保存）"}\n`;
 }
 
+function continuityContent(workspace: NovelWorkspaceData) {
+  return String(workspace.continuityState?.content ?? "").trim()
+    || "# 正文连续性状态\n\n> 截至第0章：尚未建立已确认的连续性状态。\n";
+}
+
 function writeText(filePath: string, content: string) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const temporaryPath = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
@@ -187,6 +192,7 @@ export function syncNovelCodexProject(workspace: NovelWorkspaceData, options: Pr
   const novel = workspace.novel;
   fs.mkdirSync(path.join(projectDir, "资料", "剧情单元"), { recursive: true });
   fs.mkdirSync(path.join(projectDir, "资料", "分章大纲"), { recursive: true });
+  fs.mkdirSync(path.join(projectDir, "资料", "连续性"), { recursive: true });
   fs.mkdirSync(path.join(projectDir, "正文"), { recursive: true });
 
   writeText(path.join(projectDir, "AGENTS.override.md"), `# 小说正文创作项目\n\n- 本目录只用于创作当前小说，不修改 DropMind 程序代码。\n- 每次收到“执行当前任务”后，先完整读取《当前任务.md》及其中列出的资料。\n- 严格按任务指定章节创作，只写到结尾钩子，不提前创作下一章。\n- 正文必须保存到任务指定的文件；完成后只报告文件路径与正文字符数。\n- 若资料互相冲突或缺失，停止创作并指出具体文件。\n`);
@@ -200,6 +206,7 @@ export function syncNovelCodexProject(workspace: NovelWorkspaceData, options: Pr
   const coverInstruction = String(workspace.templates.find((row) => row.key === "cover")?.template ?? "");
   writeText(path.join(projectDir, "资料", "封面提示词.md"), markdown("封面提示词", buildCoverPrompt(selectedTopic.title || String(novel.name), selectedTopic.summary, coverInstruction)));
   writeText(path.join(projectDir, "资料", "正文创作要求.md"), markdown("正文创作要求", draftInstruction(workspace)));
+  writeText(path.join(projectDir, "资料", "连续性", "当前状态.md"), `${continuityContent(workspace).trim()}\n`);
 
   for (const row of workspace.storyUnits) {
     const start = Number(row.startChapter);
@@ -280,7 +287,7 @@ export function prepareCodexChapterTask(workspace: NovelWorkspaceData, chapterNu
     ? `沿用已经确认的章节标题“${currentTitle}”，不要另拟标题。`
     : "根据本章正文拟定一个准确、有吸引力且不剧透核心反转的章节标题，不包含“第X章”前缀，最多60个字符。";
   const outputFile = currentTitle ? chapterFileName(chapterNumber, currentTitle) : `第${chapterLabel(chapterNumber)}章__<章节标题>.md`;
-  const task = `# 当前任务：创作第${chapterNumber}章正文\n\n## 请按顺序读取\n\n- 资料/正文创作要求.md\n- 资料/核心设定.md\n- 资料/分卷大纲.md\n- 资料/本卷大纲.md\n- 资料/剧情单元/第${rangeLabel(range.start, range.end)}章.md\n- 资料/分章大纲/第${rangeLabel(range.start, range.end)}章.md\n${previous}\n\n## 本次任务\n\n1. 从分章大纲中定位第${chapterNumber}章，只创作这一章。\n2. 联系前文，确保人物、时间、地点、信息差和情绪变化连贯。\n3. ${titleInstruction}\n4. 正文不要带章节标题，不写解释、总结或下一章内容。\n5. 将最终纯正文保存到：正文/${outputFile}；文件名标题不得包含 < > : \" / \\ | ? *。\n6. 写到本章大纲的结尾钩子立即停止。\n`;
+  const task = `# 当前任务：创作第${chapterNumber}章正文\n\n## 请按顺序读取\n\n- 资料/正文创作要求.md\n- 资料/核心设定.md\n- 资料/分卷大纲.md\n- 资料/本卷大纲.md\n- 资料/连续性/当前状态.md\n- 资料/剧情单元/第${rangeLabel(range.start, range.end)}章.md\n- 资料/分章大纲/第${rangeLabel(range.start, range.end)}章.md\n${previous}\n\n## 本次任务\n\n1. 从分章大纲中定位第${chapterNumber}章，只创作这一章。\n2. 联系前文，确保人物、时间、地点、信息差和情绪变化连贯；连续性摘要只是索引，冲突时回查已确认正文。\n3. ${titleInstruction}\n4. 正文不要带章节标题，不写解释、总结或下一章内容。\n5. 将最终纯正文保存到：正文/${outputFile}；文件名标题不得包含 < > : \" / \\ | ? *。\n6. 写到本章大纲的结尾钩子立即停止。\n`;
   const taskPath = path.join(info.projectDir, "当前任务.md");
   writeText(taskPath, task);
   return { ...info, taskPath, command: "执行当前任务" };

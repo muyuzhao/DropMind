@@ -66,6 +66,38 @@ describe("novel repository", () => {
     expect(sqlite.prepare("select count(*) count from content_versions").get()).toMatchObject({ count: 1 });
   });
 
+  it("stores automated continuity with the chapter transaction and invalidates it after an earlier edit", () => {
+    const novel = repo.createNovel({ name: "连续性测试", referenceTitle: "", referenceSummary: "" });
+    repo.importAutomatedChapters({
+      novelId: novel.id,
+      runId: "run-1",
+      chapters: [
+        { chapterNumber: 1, title: "起章", content: "第一章正文", expectedUpdatedAt: null, expectedDatabaseContent: "", continuitySummary: "第一章事件", continuityState: "# 正文连续性状态\n\n截至第1章：事实一" },
+        { chapterNumber: 2, title: "续章", content: "第二章正文", expectedUpdatedAt: null, expectedDatabaseContent: "", continuitySummary: "第二章事件", continuityState: "# 正文连续性状态\n\n截至第2章：事实二" },
+      ],
+    });
+    expect(repo.getNovelWorkspace(novel.id)!.continuityState).toMatchObject({ throughChapter: 2, revision: 1, sourceRunId: "run-1" });
+
+    repo.saveChapter(novel.id, 2, "第二章人工修订", "saved", false, "续章");
+    const workspace = repo.getNovelWorkspace(novel.id)!;
+    expect(workspace.continuityState).toMatchObject({ throughChapter: 1, revision: 2 });
+    expect(workspace.continuityEvents.find((row) => row.chapterNumber === 2)?.invalidatedAt).not.toBeNull();
+  });
+
+  it("round-trips continuity state and events through JSON backup", () => {
+    const novel = repo.createNovel({ name: "连续性备份", referenceTitle: "", referenceSummary: "" });
+    repo.importAutomatedChapters({
+      novelId: novel.id,
+      runId: "run-backup",
+      chapters: [{ chapterNumber: 1, title: "起章", content: "正文", expectedUpdatedAt: null, expectedDatabaseContent: "", continuitySummary: "事件", continuityState: "# 正文连续性状态\n\n截至第1章：状态" }],
+    });
+    const parsed = parseNovelBackup(createNovelBackup(repo.getNovelWorkspace(novel.id))).workspace;
+    const imported = repo.importNovelBackup(parsed);
+    const restored = repo.getNovelWorkspace(imported.id)!;
+    expect(restored.continuityState).toMatchObject({ throughChapter: 1, sourceRunId: "run-backup" });
+    expect(restored.continuityEvents[0]).toMatchObject({ chapterNumber: 1, summary: "事件" });
+  });
+
   it("stores chapter titles and preserves them when only the body changes", () => {
     const novel = repo.createNovel({ name: "测试小说", referenceTitle: "参考书", referenceSummary: "简介" });
     repo.saveChapter(novel.id, 1, "第一版正文", "saved", false, "第1章：夜闯王府");

@@ -38,6 +38,23 @@ const backupWorkspaceSchema = z.object({
     contentType: z.enum(["step", "novel_field", "story_unit", "outline_batch", "chapter", "template"]),
     contentKey: z.string(), content: z.string(), createdAt: z.number().int(),
   }).passthrough()).default([]),
+  continuityState: z.object({
+    throughChapter: z.number().int().min(0).max(60),
+    revision: z.number().int().min(0),
+    content: z.string(),
+    sourceRunId: z.string().nullable().default(null),
+    createdAt: z.number().int(),
+    updatedAt: z.number().int(),
+  }).passthrough().nullable().default(null),
+  continuityEvents: z.array(z.object({
+    chapterNumber,
+    runId: z.string(),
+    chapterHash: z.string(),
+    summary: z.string(),
+    stateContent: z.string(),
+    invalidatedAt: z.number().int().nullable().default(null),
+    createdAt: z.number().int(),
+  }).passthrough()).default([]),
 }).superRefine((workspace, context) => {
   const templateKeys = workspace.templates.map((row) => row.key);
   if (templateKeys.length !== promptTemplateKeyValues.length || new Set(templateKeys).size !== promptTemplateKeyValues.length || promptTemplateKeyValues.some((key) => !templateKeys.includes(key))) {
