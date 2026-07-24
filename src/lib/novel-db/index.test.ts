@@ -14,6 +14,8 @@ describe("initializeNovelDatabase", () => {
     const names = sqlite.prepare("select name from sqlite_master where type = 'table'").all() as Array<{ name: string }>;
     expect(names.map((row) => row.name)).toEqual(expect.arrayContaining([
       "novels", "prompt_templates", "prompt_schemes", "prompt_scheme_templates", "novel_steps", "story_units", "chapter_outlines", "chapters", "content_versions", "app_migrations",
+      "novel_continuity_states", "chapter_continuity_events",
+      "delivery_settings", "delivery_targets", "delivery_jobs",
     ]));
   });
 
@@ -31,6 +33,22 @@ describe("initializeNovelDatabase", () => {
 
     expect(sqlite.prepare("select current_range_start,current_chapter from novels where id=?").get("legacy"))
       .toMatchObject({ current_range_start: 1, current_chapter: 1 });
+  });
+
+  it("adds the publish date column to an existing delivery queue", () => {
+    const sqlite = new Database(":memory:");
+    sqlite.exec(`create table delivery_jobs (
+      id TEXT PRIMARY KEY, novel_id TEXT NOT NULL, chapter_number INTEGER NOT NULL, platform TEXT NOT NULL,
+      target_book_name TEXT NOT NULL, target_manage_url TEXT NOT NULL, chapter_title TEXT NOT NULL,
+      chapter_content TEXT NOT NULL, content_hash TEXT NOT NULL, status TEXT NOT NULL, last_error TEXT NOT NULL DEFAULT '',
+      claimed_at INTEGER, filled_at INTEGER, submitted_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+      UNIQUE(novel_id, chapter_number, platform)
+    )`);
+
+    initializeNovelDatabase(sqlite);
+
+    const columns = sqlite.prepare("pragma table_info(delivery_jobs)").all() as Array<{ name: string }>;
+    expect(columns.map((column) => column.name)).toContain("publish_date");
   });
 
   it("backs up existing data before adding chapter titles", () => {
@@ -60,8 +78,11 @@ describe("initializeNovelDatabase", () => {
       expect(sqlite.prepare("select title,content from chapters where id=?").get("chapter-1"))
         .toMatchObject({ title: "", content: "迁移前正文" });
       const backups = fs.readdirSync(path.join(directory, "backups"));
-      expect(backups).toHaveLength(1);
-      const backup = new Database(path.join(directory, "backups", backups[0]), { readonly: true });
+      const titleBackup = backups.find((name) => name.startsWith("pre-chapter-titles-v1-"));
+      expect(titleBackup).toBeTruthy();
+      expect(backups.some((name) => name.startsWith("pre-novel-continuity-v1-"))).toBe(true);
+      expect(backups.some((name) => name.startsWith("pre-fanqie-delivery-v1-"))).toBe(true);
+      const backup = new Database(path.join(directory, "backups", titleBackup!), { readonly: true });
       expect(backup.prepare("select content from chapters where id=?").get("chapter-1"))
         .toMatchObject({ content: "迁移前正文" });
       backup.close();

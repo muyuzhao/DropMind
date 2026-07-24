@@ -51,6 +51,9 @@ CREATE TABLE IF NOT EXISTS content_versions (
   content_type TEXT NOT NULL, content_key TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS content_version_lookup ON content_versions(novel_id, content_type, content_key);
+`;
+
+const CREATE_CONTINUITY_SCHEMA = `
 CREATE TABLE IF NOT EXISTS novel_continuity_states (
   novel_id TEXT PRIMARY KEY REFERENCES novels(id) ON DELETE CASCADE,
   through_chapter INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 0,
@@ -67,16 +70,62 @@ CREATE TABLE IF NOT EXISTS chapter_continuity_events (
 CREATE INDEX IF NOT EXISTS continuity_event_lookup ON chapter_continuity_events(novel_id, chapter_number, invalidated_at, created_at);
 `;
 
+const CREATE_DELIVERY_SCHEMA = `
+CREATE TABLE IF NOT EXISTS delivery_settings (
+  id TEXT PRIMARY KEY, connection_token TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS delivery_targets (
+  novel_id TEXT PRIMARY KEY REFERENCES novels(id) ON DELETE CASCADE,
+  platform TEXT NOT NULL, book_name TEXT NOT NULL, manage_url TEXT NOT NULL, default_volume TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS delivery_jobs (
+  id TEXT PRIMARY KEY, novel_id TEXT NOT NULL REFERENCES novels(id) ON DELETE CASCADE,
+  chapter_number INTEGER NOT NULL, platform TEXT NOT NULL, target_book_name TEXT NOT NULL, target_manage_url TEXT NOT NULL,
+  chapter_title TEXT NOT NULL, chapter_content TEXT NOT NULL, content_hash TEXT NOT NULL, publish_date TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL, last_error TEXT NOT NULL DEFAULT '', claimed_at INTEGER, filled_at INTEGER, submitted_at INTEGER,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  UNIQUE(novel_id, chapter_number, platform)
+);
+CREATE INDEX IF NOT EXISTS delivery_job_status ON delivery_jobs(status, created_at);
+CREATE INDEX IF NOT EXISTS delivery_job_novel ON delivery_jobs(novel_id, chapter_number);
+`;
+
 export function initializeNovelDatabase(sqlite: Database.Database) {
   sqlite.exec(CREATE_SCHEMA);
   ensurePromptSchemeColumn(sqlite);
   ensureWorkPositionColumns(sqlite);
   ensureChapterTitleColumn(sqlite);
+  ensureContinuitySchema(sqlite);
+  ensureDeliverySchema(sqlite);
   seedDefaultPromptScheme(sqlite);
   ensurePublishPromptTemplates(sqlite);
   migrateTenChapterWorkflow(sqlite);
   migrateStructuredPromptModel(sqlite);
   return sqlite;
+}
+
+export function ensureContinuitySchema(sqlite: Database.Database) {
+  const tables = new Set((sqlite.prepare("select name from sqlite_master where type='table'").all() as Array<{ name: string }>).map((row) => row.name));
+  if (["novel_continuity_states", "chapter_continuity_events"].every((table) => tables.has(table))) return;
+  const novels = tables.has("novels") ? (sqlite.prepare("select count(*) count from novels").get() as { count: number }).count : 0;
+  if (novels > 0) migrationBackup(sqlite, "novel-continuity-v1");
+  sqlite.exec(CREATE_CONTINUITY_SCHEMA);
+}
+
+export function ensureDeliverySchema(sqlite: Database.Database) {
+  const tables = new Set((sqlite.prepare("select name from sqlite_master where type='table'").all() as Array<{ name: string }>).map((row) => row.name));
+  if (!["delivery_settings", "delivery_targets", "delivery_jobs"].every((table) => tables.has(table))) {
+    const novels = tables.has("novels") ? (sqlite.prepare("select count(*) count from novels").get() as { count: number }).count : 0;
+    if (novels > 0) migrationBackup(sqlite, "fanqie-delivery-v1");
+    sqlite.exec(CREATE_DELIVERY_SCHEMA);
+  }
+  const jobColumns = sqlite.prepare("pragma table_info(delivery_jobs)").all() as Array<{ name: string }>;
+  if (!jobColumns.some((column) => column.name === "publish_date")) {
+    const rows = (sqlite.prepare("select count(*) count from delivery_jobs").get() as { count: number }).count;
+    if (rows > 0) migrationBackup(sqlite, "fanqie-publish-date-v1");
+    sqlite.exec("alter table delivery_jobs add column publish_date TEXT NOT NULL DEFAULT ''");
+  }
 }
 
 function ensureChapterTitleColumn(sqlite: Database.Database) {

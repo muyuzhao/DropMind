@@ -28,6 +28,17 @@ export function automationTaskProgress(manifest: TaskManifest) {
   return { total, completed, imported, handoffReady };
 }
 
+export function automationTaskTriggerSummary(tasks: Array<{ label: string; status: string; completed: number; total: number }>) {
+  const attention = tasks.find((task) => ["failed", "stale", "terminated"].includes(task.status));
+  if (attention) return { tone: "attention" as const, label: "自动任务 · 需要处理" };
+  const running = tasks.find((task) => task.status === "running" || task.status === "pending");
+  if (running) return { tone: "running" as const, label: `${running.label} ${running.completed}/${running.total}` };
+  if (tasks.some((task) => task.status === "paused")) return { tone: "paused" as const, label: "自动任务 · 已暂停" };
+  const completed = tasks.filter((task) => task.status === "completed").length;
+  if (completed) return { tone: "completed" as const, label: `自动任务 · ${completed} 项已完成` };
+  return { tone: "idle" as const, label: "自动任务" };
+}
+
 export function nextChapterBatchStart(endChapter: number) {
   return endChapter < 60 ? endChapter + 1 : null;
 }
