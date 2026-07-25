@@ -52,7 +52,13 @@ describe("Codex novel project files", () => {
     expect(fs.readFileSync(path.join(result.projectDir, "资料", "封面提示词.md"), "utf8")).toContain("【书名】\n古言：测试/项目");
     expect(fs.readFileSync(path.join(result.projectDir, "资料", "剧情单元", "第001-010章.md"), "utf8")).toContain("第1-10章剧情单元");
     expect(fs.readFileSync(result.taskPath, "utf8")).toContain("正文/第001章__初入王府.md");
-    expect(fs.readFileSync(result.taskPath, "utf8")).toContain("正文/第002章__<章节标题>.md");
+    const task = fs.readFileSync(result.taskPath, "utf8");
+    expect(task).toContain("待导入/第002章.md");
+    expect(task).toContain("<!-- DROPMIND_CHAPTER_EVENT -->");
+    expect(task).toContain("<!-- DROPMIND_CONTINUITY -->");
+    expect(task).toContain("<!-- DROPMIND_STATE_THROUGH: 2 -->");
+    expect(task).toContain("当前任务的连续性基线：当前任务连续性.md");
+    expect(fs.readFileSync(path.join(result.projectDir, "当前任务连续性.md"), "utf8")).toContain("第1章");
     expect(result.command).toBe("执行当前任务");
     expect(inspectCodexChapterState(workspace, 2, { rootDir })).toMatchObject({ phase: "task_ready", taskChapter: 2, fileExists: false });
   });
@@ -81,6 +87,51 @@ describe("Codex novel project files", () => {
     fs.writeFileSync(bodyPath, "第二章纯正文", "utf8");
 
     expect(readCodexChapter(workspace, 2, { rootDir })).toMatchObject({ title: "夜闯王府", content: "第二章纯正文" });
+  });
+
+  it("only prepares the first unwritten chapter", () => {
+    const workspace = completeWorkspace();
+
+    expect(inspectCodexChapterState(workspace, 1, { rootDir })).toMatchObject({ generationAllowed: false, nextWritableChapter: 2 });
+    expect(() => prepareCodexChapterTask(workspace, 1, { rootDir })).toThrow("第1章已有正文");
+    expect(inspectCodexChapterState(workspace, 2, { rootDir })).toMatchObject({ generationAllowed: true, nextWritableChapter: 2 });
+    expect(() => prepareCodexChapterTask(workspace, 3, { rootDir })).toThrow("请先完成第2章");
+  });
+
+  it("reads a structured single-chapter result with continuity artifacts", () => {
+    const workspace = completeWorkspace();
+    const info = prepareCodexChapterTask(workspace, 2, { rootDir });
+    const pendingPath = path.join(info.projectDir, "待导入", "第002章.md");
+    fs.writeFileSync(pendingPath, `<!-- DROPMIND_TITLE: 夜闯王府 -->\n第二章纯正文\n\n<!-- DROPMIND_CHAPTER_EVENT -->\n\n- [伏笔-001] 王妃拿到密信。\n\n<!-- DROPMIND_CONTINUITY -->\n\n# 正文连续性状态\n<!-- DROPMIND_STATE_THROUGH: 2 -->\n\n截至第2章，王妃持有密信。`, "utf8");
+
+    const result = readCodexChapter(workspace, 2, { rootDir });
+    expect(result).toMatchObject({
+      title: "夜闯王府",
+      content: "第二章纯正文",
+      continuitySummary: "- [伏笔-001] 王妃拿到密信。",
+    });
+    expect(result.continuityState).toContain("DROPMIND_STATE_THROUGH: 2");
+    expect(result.continuityRunId).toMatch(/^manual-2-/);
+    expect(inspectCodexChapterState(workspace, 2, { rootDir })).toMatchObject({ phase: "file_ready", fileExists: true });
+  });
+
+  it("rejects a structured single-chapter result with an invalid state chapter", () => {
+    const workspace = completeWorkspace();
+    const info = prepareCodexChapterTask(workspace, 2, { rootDir });
+    const pendingPath = path.join(info.projectDir, "待导入", "第002章.md");
+    fs.writeFileSync(pendingPath, `<!-- DROPMIND_TITLE: 夜闯王府 -->\n第二章纯正文\n<!-- DROPMIND_CHAPTER_EVENT -->\n事件\n<!-- DROPMIND_CONTINUITY -->\n# 正文连续性状态\n<!-- DROPMIND_STATE_THROUGH: 1 -->\n截至第1章`, "utf8");
+
+    expect(() => readCodexChapter(workspace, 2, { rootDir })).toThrow("第二行标明正确章节");
+  });
+
+  it("rejects a structured single-chapter result after its continuity baseline changes", () => {
+    const workspace = completeWorkspace();
+    const info = prepareCodexChapterTask(workspace, 2, { rootDir });
+    const pendingPath = path.join(info.projectDir, "待导入", "第002章.md");
+    fs.writeFileSync(pendingPath, `<!-- DROPMIND_TITLE: 夜闯王府 -->\n第二章纯正文\n<!-- DROPMIND_CHAPTER_EVENT -->\n事件\n<!-- DROPMIND_CONTINUITY -->\n# 正文连续性状态\n<!-- DROPMIND_STATE_THROUGH: 2 -->\n截至第2章`, "utf8");
+    repo.saveChapter(String(workspace.novel.id), 1, "第一章已被改写", "saved", false, "初入王府");
+
+    expect(() => readCodexChapter(repo.getNovelWorkspace(String(workspace.novel.id))!, 2, { rootDir })).toThrow("连续性基线已经变化");
   });
 
   it("keeps legacy filenames readable and renames them after a title is confirmed", () => {

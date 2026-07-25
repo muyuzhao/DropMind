@@ -56,6 +56,9 @@ export function FanqieDeliveryPanel({ mode, novelId, novelName, chapterNumber, c
   const [message, setMessage] = useState("");
 
   const currentJob = useMemo(() => state.jobs.find((job) => job.chapterNumber === chapterNumber) ?? null, [chapterNumber, state.jobs]);
+  const nextDeliveryJob = useMemo(() => state.jobs
+    .filter((job) => ["ready", "claimed", "filled"].includes(job.status))
+    .sort((left, right) => left.chapterNumber - right.chapterNumber || left.createdAt - right.createdAt || left.id.localeCompare(right.id))[0] ?? null, [state.jobs]);
   const earliestPublishDate = tomorrowDate();
   const scheduleLocked = Boolean(currentJob && ["claimed", "filled", "submitted"].includes(currentJob.status));
 
@@ -111,20 +114,20 @@ export function FanqieDeliveryPanel({ mode, novelId, novelName, chapterNumber, c
     <div className="delivery-target-form">
       <label>番茄作品名<input value={bookName} maxLength={100} onChange={(event) => setBookName(event.target.value)} placeholder="必须与番茄后台作品名一致" /></label>
       <label>作品管理页<input value={manageUrl} onChange={(event) => setManageUrl(event.target.value)} placeholder="https://fanqienovel.com/main/writer/book-manage" /></label>
-      <div className="delivery-actions"><button type="button" disabled={busy === "target" || !bookName.trim() || !manageUrl.trim()} onClick={() => void saveTarget()}>{busy === "target" ? "保存中…" : "保存番茄绑定"}</button>{state.target && <a className="button-link" href={state.target.manageUrl} target="_blank" rel="noreferrer">打开番茄后台</a>}</div>
+      <div className="delivery-actions"><button type="button" disabled={busy === "target" || !bookName.trim() || !manageUrl.trim()} onClick={() => void saveTarget()}>{busy === "target" ? "保存中…" : "保存番茄绑定"}</button>{state.target && <a className="button-link" href={state.target.manageUrl} target="_blank" rel="noreferrer">打开后台手动投递</a>}</div>
     </div>
     <details className="delivery-extension-setup"><summary>首次使用：安装并连接 Chrome 扩展</summary><ol><li>在 Chrome 扩展管理页开启“开发者模式”。</li><li>选择“加载已解压的扩展程序”，加载下面的目录。</li><li>打开扩展设置，填入本机地址和连接令牌，然后测试连接。</li></ol><label>扩展目录<div className="delivery-copy-row"><code>{extensionDirectory}</code><button type="button" className="button-quiet" onClick={() => void copy(extensionDirectory, "扩展目录已复制")}>复制</button></div></label><label>连接令牌<div className="delivery-copy-row"><code>{state.connectionToken}</code><button type="button" className="button-quiet" onClick={() => void copy(state.connectionToken, "连接令牌已复制")}>复制</button></div></label></details>
     {message && <div className="automation-message">{message}</div>}
   </section>;
 
   const canQueue = Boolean(state.target && chapterTitle.trim() && chapterContent.trim() && !chapterDirty && publishDate >= earliestPublishDate && currentJob?.status !== "submitted");
-  const canStartAutomatically = Boolean(currentJob && ["ready", "claimed", "filled"].includes(currentJob.status));
   return <section className="fanqie-delivery-panel chapter-delivery-panel">
     <div className="panel-title"><div><p className="novel-kicker">番茄单章投递</p><h3>第 {chapterNumber} 章《{chapterTitle || "未命名"}》</h3></div>{currentJob && <span className={`delivery-status ${currentJob.status}`}>{statusLabels[currentJob.status]}</span>}</div>
     {!state.target ? <p className="delivery-warning">尚未绑定番茄作品，请先到第6步“发布准备”完成绑定和扩展连接。</p> : <p className="delivery-explanation">目标作品：{state.target.bookName}。队列保存的是当前正式版本；本地未保存修改不会被投递。</p>}
     {currentJob?.lastError && <p className="delivery-warning">{currentJob.lastError}</p>}
     <div className="delivery-schedule"><label>发布日期<input type="date" min={earliestPublishDate} value={publishDate} disabled={scheduleLocked} onChange={(event) => setPublishDate(event.target.value)} /></label><span><strong>12:00</strong> 固定发布</span>{scheduleLocked && <small>扩展已领取后不能修改日期</small>}</div>
-    <div className="delivery-actions"><button type="button" disabled={!canQueue || busy === "queue"} onClick={() => void queue()}>{busy === "queue" ? "加入中…" : currentJob && ["failed", "stale", "cancelled"].includes(currentJob.status) ? "重新加入队列" : currentJob ? "更新投递任务" : "投递到番茄"}</button>{state.target && <a className="button-link" href={canStartAutomatically && currentJob ? automaticDeliveryUrl(state.target.manageUrl, currentJob.id) : state.target.manageUrl} target="_blank" rel="noreferrer">{canStartAutomatically ? "打开后台并自动投递" : "打开番茄后台"}</a>}<button type="button" className="button-secondary" disabled={busy === "refresh"} onClick={() => void refresh()}>{busy === "refresh" ? "刷新中…" : "刷新投递状态"}</button>{currentJob && !["submitted", "cancelled"].includes(currentJob.status) && <button type="button" className="button-quiet" disabled={busy === "cancel"} onClick={() => void cancel()}>取消任务</button>}</div>
+    {nextDeliveryJob && <p className="delivery-explanation">待投递章节：{state.jobs.filter((job) => ["ready", "claimed", "filled"].includes(job.status)).map((job) => `第${job.chapterNumber}章`).join("、")}；下一章必须先处理第{nextDeliveryJob.chapterNumber}章。</p>}
+    <div className="delivery-actions"><button type="button" disabled={!canQueue || busy === "queue"} onClick={() => void queue()}>{busy === "queue" ? "加入中…" : currentJob && ["failed", "stale", "cancelled"].includes(currentJob.status) ? "重新加入队列" : currentJob ? "更新投递任务" : "投递到番茄"}</button>{state.target && nextDeliveryJob && <a className="button-link" href={automaticDeliveryUrl(state.target.manageUrl, nextDeliveryJob.id)} target="_blank" rel="noreferrer">自动投递第{nextDeliveryJob.chapterNumber}章</a>}{state.target && <a className="button-link button-secondary" href={state.target.manageUrl} target="_blank" rel="noreferrer">打开后台手动投递</a>}<button type="button" className="button-secondary" disabled={busy === "refresh"} onClick={() => void refresh()}>{busy === "refresh" ? "刷新中…" : "刷新投递状态"}</button>{currentJob && !["submitted", "cancelled"].includes(currentJob.status) && <button type="button" className="button-quiet" disabled={busy === "cancel"} onClick={() => void cancel()}>取消任务</button>}</div>
     {!scheduleLocked && publishDate < earliestPublishDate && <p className="delivery-warning">发布日期至少选择明天。</p>}
     {scheduleLocked && !publishDate && currentJob?.status !== "submitted" && <p className="delivery-warning">这是升级前领取的任务，没有发布日期；请取消后重新选择日期加入队列。</p>}
     {chapterDirty && <p className="delivery-warning">当前标题或正文尚未保存，保存后才能投递。</p>}

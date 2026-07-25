@@ -71,6 +71,9 @@ describe("chapter automation", () => {
     expect(firstPrompt).toContain("inputs/continuity-base.md");
     expect(firstPrompt).toContain("DROPMIND_CHAPTER_EVENT");
     expect(secondPrompt).toContain("outputs/第001章.md");
+    const localAgents = fs.readFileSync(path.join(result.runDir, "AGENTS.override.md"), "utf8");
+    expect(localAgents).toContain("本节点的唯一任务");
+    expect(localAgents).toContain("不要读取或寻找《当前任务.md》");
     expect(fs.readFileSync(path.join(result.runDir, result.manifest.continuityBasePath!), "utf8")).toContain("截至第0章");
     expect(result.manifest.runner.command).toContain(result.runDir);
   });
@@ -79,7 +82,7 @@ describe("chapter automation", () => {
     const result = createChapterAutomationRun(repo.getNovelWorkspace(novelId)!, { startChapter: 1, chapterCount: 1 }, { rootDir });
     requestChapterAutomationControl(result.runDir, "run", { mode: "retry-node", targetNodeId: "chapter-1" });
     const fakeCli = path.join(rootDir, "fake-chapter-codex.cmd");
-    fs.writeFileSync(fakeCli, `@echo off\r\nchcp 65001 >nul\r\nset out=\r\n:args\r\nif "%~1"=="" goto ready\r\nif "%~1"=="--output-last-message" set out=%~2\r\nshift\r\ngoto args\r\n:ready\r\n>"%out%" echo ^<!-- DROPMIND_TITLE: 第一章标题 --^>\r\n>>"%out%" echo 这是自动生成的第一章正文。\r\n>>"%out%" echo ^<!-- DROPMIND_CHAPTER_EVENT --^>\r\n>>"%out%" echo event-one\r\n>>"%out%" echo ^<!-- DROPMIND_CONTINUITY --^>\r\n>>"%out%" echo # 正文连续性状态\r\n>>"%out%" echo ^<!-- DROPMIND_STATE_THROUGH: 1 --^>\r\n>>"%out%" echo fact-one\r\nexit /b 0\r\n`, "utf8");
+    fs.writeFileSync(fakeCli, `@echo off\r\nchcp 65001 >nul\r\nset out=\r\n:args\r\nif "%~1"=="" goto ready\r\nif "%~1"=="--output-last-message" set out=%~2\r\nshift\r\ngoto args\r\n:ready\r\nif exist "%~dp0failed.once" goto complete\r\n>"%~dp0failed.once" echo failed\r\n>"%out%" echo ^<!-- DROPMIND_TITLE: 缺少标记的结果 --^>\r\n>>"%out%" echo 这次故意缺少章节连续性事件标记。\r\nexit /b 0\r\n:complete\r\n>"%out%" echo ^<!-- DROPMIND_TITLE: 第一章标题 --^>\r\n>>"%out%" echo 这是自动生成的第一章正文。\r\n>>"%out%" echo ^<!-- DROPMIND_CHAPTER_EVENT --^>\r\n>>"%out%" echo event-one\r\n>>"%out%" echo ^<!-- DROPMIND_CONTINUITY --^>\r\n>>"%out%" echo # 正文连续性状态\r\n>>"%out%" echo ^<!-- DROPMIND_STATE_THROUGH: 1 --^>\r\n>>"%out%" echo fact-one\r\nexit /b 0\r\n`, "utf8");
 
     const executed = spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(result.runDir, "run-pipeline.ps1")], {
       cwd: result.runDir,
@@ -91,7 +94,8 @@ describe("chapter automation", () => {
     expect(executed.status, executed.stderr || executed.stdout).toBe(0);
     const manifest = readChapterAutomationManifest(result.runDir);
     expect(manifest.status).toBe("paused");
-    expect(manifest.nodes[0]).toMatchObject({ status: "completed", attempts: 1 });
+    expect(manifest.nodes[0]).toMatchObject({ status: "completed", attempts: 2, failureReason: null });
+    expect(manifest.failureReason).toBeNull();
     expect(fs.readFileSync(path.join(result.runDir, manifest.nodes[0].outputPath), "utf8")).toContain("第一章正文");
     expect(fs.readFileSync(path.join(result.runDir, manifest.continuityPath), "utf8")).toContain("fact-one");
     expect(fs.readFileSync(path.join(result.runDir, manifest.continuityEventsDir!, "第001章.md"), "utf8")).toContain("event-one");
@@ -100,13 +104,12 @@ describe("chapter automation", () => {
   it("enforces range, previous chapter, prerequisites, and published chapter protection", () => {
     const workspace = repo.getNovelWorkspace(novelId)!;
     expect(() => createChapterAutomationRun(workspace, { startChapter: 1, chapterCount: 11 }, { rootDir })).toThrow("1–10 章");
-    expect(() => createChapterAutomationRun(workspace, { startChapter: 2, chapterCount: 1 }, { rootDir })).toThrow("第1章正文");
+    expect(() => createChapterAutomationRun(workspace, { startChapter: 2, chapterCount: 1 }, { rootDir })).toThrow("请先完成第1章");
     repo.saveChapter(novelId, 1, "已发布正文", "published", false);
     expect(() => createChapterAutomationRun(repo.getNovelWorkspace(novelId)!, { startChapter: 1, chapterCount: 1 }, { rootDir })).toThrow("已经发布");
   });
 
-  it("imports all completed chapters atomically, archives overwritten text, and is idempotent", () => {
-    repo.saveChapter(novelId, 1, "旧第一章", "saved", false);
+  it("imports all completed append-only chapters atomically and is idempotent", () => {
     const workspace = repo.getNovelWorkspace(novelId)!;
     const result = createChapterAutomationRun(workspace, { startChapter: 1, chapterCount: 2 }, { rootDir });
     const manifest = completeRun(result.runDir, { 1: "自动生成第一章", 2: "自动生成第二章" });
@@ -119,7 +122,7 @@ describe("chapter automation", () => {
     expect(refreshed.chapters.find((row) => Number(row.chapterNumber) === 1)?.title).toBe("自动标题1");
     expect(refreshed.continuityState).toMatchObject({ throughChapter: 2, revision: 1, sourceRunId: manifest.runId });
     expect(refreshed.continuityEvents.map((row) => row.chapterNumber)).toEqual([1, 2]);
-    expect(refreshed.contentVersions.some((row) => row.contentType === "chapter" && row.contentKey === "1" && row.content === "旧第一章")).toBe(true);
+    expect(refreshed.contentVersions.some((row) => row.contentType === "chapter")).toBe(false);
     expect(importCompletedChapterAutomationRun(result.runDir, readChapterAutomationManifest(result.runDir), refreshed, repo).importedCount).toBe(0);
   });
 

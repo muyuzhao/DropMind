@@ -86,7 +86,7 @@ function durationSeconds(startedAt: string | null, endedAt: string | null) {
   return Number.isFinite(milliseconds) ? Math.max(0, Math.round(milliseconds / 1000)) : null;
 }
 
-export const AUTOMATION_RUNNER_VERSION = 16;
+export const AUTOMATION_RUNNER_VERSION = 17;
 
 function slash(value: string) {
   return value.replaceAll("\\", "/");
@@ -365,6 +365,7 @@ foreach ($Node in $Manifest.nodes) {
     $Node.startedAt = [DateTime]::UtcNow.ToString("o")
     $Node.lastDurationSeconds = $null
     $Node.failureReason = $null
+    $Manifest.failureReason = $null
     $Manifest.status = "running"
     $Manifest.currentNode = $Node.id
     Save-JsonAtomic $ManifestPath $Manifest
@@ -474,6 +475,7 @@ foreach ($Node in $Manifest.nodes) {
       $Node.status = "completed"
       $Node.completedAt = [DateTime]::UtcNow.ToString("o")
       $Node.failureReason = $null
+      $Manifest.failureReason = $null
       Save-JsonAtomic $ManifestPath $Manifest
       Write-Host ("[" + (Get-Date -Format "HH:mm:ss") + "] 已完成：" + $Node.label) -ForegroundColor Green
     } catch {

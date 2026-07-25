@@ -167,9 +167,24 @@ export function createDeliveryRepository(sqlite: Database.Database) {
         const timestamp = now();
         sqlite.prepare("update delivery_jobs set status='ready',claimed_at=null,updated_at=? where status='claimed' and claimed_at<?")
           .run(timestamp, timestamp - CLAIM_TIMEOUT_MS);
-        const candidates = requestedJobId
-          ? sqlite.prepare("select * from delivery_jobs where id=? and status in ('ready','claimed','filled')").all(requestedJobId) as Row[]
-          : sqlite.prepare("select * from delivery_jobs where status='ready' order by created_at limit 100").all() as Row[];
+        let candidates: Row[];
+        if (requestedJobId) {
+          const requested = sqlite.prepare("select * from delivery_jobs where id=? and status in ('ready','claimed','filled')").get(requestedJobId) as Row | undefined;
+          if (!requested) candidates = [];
+          else {
+            const earlier = sqlite.prepare(`select chapter_number from delivery_jobs
+              where novel_id=? and platform=? and chapter_number<? and status in ('ready','claimed','filled')
+              order by chapter_number,created_at,id limit 1`).get(requested.novel_id, requested.platform, requested.chapter_number) as { chapter_number: number } | undefined;
+            if (earlier) throw new Error(`第${earlier.chapter_number}章仍在投递队列，请先处理该章`);
+            candidates = [requested];
+          }
+        } else {
+          candidates = sqlite.prepare(`select current.* from delivery_jobs current
+            where current.status='ready' and not exists (
+              select 1 from delivery_jobs earlier where earlier.novel_id=current.novel_id and earlier.platform=current.platform
+              and earlier.chapter_number<current.chapter_number and earlier.status in ('ready','claimed','filled')
+            ) order by current.created_at,current.chapter_number,current.id limit 100`).all() as Row[];
+        }
         for (const row of candidates) {
           const chapter = sqlite.prepare("select title,content from chapters where novel_id=? and chapter_number=?").get(row.novel_id, row.chapter_number) as { title: string; content: string } | undefined;
           if (!chapter || contentHash(chapter.title, chapter.content) !== String(row.content_hash)) {

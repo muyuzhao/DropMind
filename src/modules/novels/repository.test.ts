@@ -156,6 +156,36 @@ describe("novel repository", () => {
     expect(repo.getNovelWorkspace(novel.id)!.chapters[0].content).toBe("其他窗口修改");
   });
 
+  it("rejects single and batch Codex overwrites of existing chapters", () => {
+    const novel = repo.createNovel({ name: "追加保护", referenceTitle: "", referenceSummary: "" });
+    repo.saveChapter(novel.id, 1, "已有正文", "saved", false, "已有标题");
+    const existing = repo.getNovelWorkspace(novel.id)!.chapters[0];
+
+    expect(() => repo.importCodexChapter(novel.id, 1, "新标题", "新正文", Number(existing.updatedAt), "已有标题", "已有正文"))
+      .toThrow("不能覆盖");
+    expect(() => repo.importAutomatedChapters({
+      novelId: novel.id,
+      chapters: [{ chapterNumber: 1, title: "新标题", content: "新正文", expectedUpdatedAt: Number(existing.updatedAt), expectedDatabaseTitle: "已有标题", expectedDatabaseContent: "已有正文" }],
+    })).toThrow("不能覆盖已有章节");
+    expect(repo.getNovelWorkspace(novel.id)!.chapters[0]).toMatchObject({ title: "已有标题", content: "已有正文" });
+  });
+
+  it("imports manual Codex chapter continuity in the same transaction", () => {
+    const novel = repo.createNovel({ name: "单章连续性", referenceTitle: "", referenceSummary: "" });
+    const state = "# 正文连续性状态\n<!-- DROPMIND_STATE_THROUGH: 1 -->\n\n截至第1章，主角已经入城。";
+
+    repo.importCodexChapter(novel.id, 1, "入城", "第一章正文", null, "", "", {
+      runId: "manual-1-test",
+      summary: "- 主角抵达城门。",
+      state,
+    });
+
+    const workspace = repo.getNovelWorkspace(novel.id)!;
+    expect(workspace.chapters[0]).toMatchObject({ title: "入城", content: "第一章正文" });
+    expect(workspace.continuityEvents[0]).toMatchObject({ chapterNumber: 1, runId: "manual-1-test", summary: "- 主角抵达城门。", invalidatedAt: null });
+    expect(workspace.continuityState).toMatchObject({ throughChapter: 1, sourceRunId: "manual-1-test", content: state });
+  });
+
   it("deletes all child records", () => {
     const novel = repo.createNovel({ name: "测试小说", referenceTitle: "参考书", referenceSummary: "简介" });
     repo.saveChapter(novel.id, 1, "第一章", "saved", false);

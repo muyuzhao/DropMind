@@ -353,6 +353,37 @@ button.button-quiet:hover { text-decoration: underline; }
 .chapter-selector-details > summary { padding: 12px 14px; cursor: pointer; font-weight: 700; }
 .chapter-selector-details .chapter-groups { margin: 0; padding: 0 14px 14px; }
 
+.chapter-workbench { display: grid; gap: 16px; }
+.chapter-mode-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 4px; border: 1px solid var(--line); background: #e8e3d8; }
+.chapter-mode-tabs button { min-height: 46px; color: var(--muted); background: transparent; border: 0; font-size: 15px; }
+.chapter-mode-tabs button:hover { color: var(--ink); background: rgba(255,255,255,.58); }
+.chapter-mode-tabs button.active { color: white; background: var(--green); box-shadow: 0 2px 8px rgba(23,63,49,.18); }
+.chapter-context-navigation { margin-bottom: 0; padding: 10px 12px; border: 1px solid var(--line); background: var(--card); }
+.chapter-context-navigation strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chapter-mode-panel { min-width: 0; }
+.chapter-writing-layout .result-editor-panel { padding: clamp(18px,2.4vw,30px); border: 1px solid var(--line); background: #fbfaf7; }
+.chapter-writing-layout .result-editor-panel textarea { min-height: 58vh; padding: 18px; background: white; font: 16px/1.9 "Microsoft YaHei", sans-serif; }
+.chapter-writing-advanced { margin-top: 18px; border: 1px solid var(--line); background: var(--card); }
+.chapter-writing-advanced > summary { padding: 14px 16px; cursor: pointer; color: var(--muted); font-weight: 700; }
+.chapter-writing-advanced > div { display: grid; gap: 18px; padding: 0 16px 16px; border-top: 1px solid var(--line); }
+.chapter-writing-advanced .codex-project-panel { margin: 16px 0 0; }
+.chapter-writing-advanced .prompt-editor-panel { margin: 0; }
+.chapter-writing-advanced .prompt-source-bar,.chapter-writing-advanced .automatic-context { margin-bottom: 0; }
+.chapter-publish-mode { display: grid; gap: 18px; }
+.chapter-publish-summary { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 22px; border: 1px solid var(--line); background: white; }
+.chapter-publish-summary h2 { margin: 4px 0 8px; font: 26px/1.3 Georgia,"Songti SC",serif; }
+.chapter-publish-summary p:not(.novel-kicker) { margin: 0; color: var(--muted); }
+.chapter-publish-summary .publish-toggle { flex: 0 0 auto; }
+.chapter-publish-mode .fanqie-delivery-panel { margin-bottom: 0; }
+.chapter-reader-shell { min-height: 65vh; padding: clamp(28px,5vw,72px); border: 1px solid var(--line); background: #fffdf8; }
+.chapter-reader-shell > header { max-width: 760px; margin: 0 auto 38px; text-align: center; }
+.chapter-reader-shell > header p { margin: 0 0 10px; color: var(--muted); font-size: 13px; letter-spacing: .12em; }
+.chapter-reader-shell > header h2 { margin: 0 0 12px; font: clamp(28px,4vw,42px)/1.3 Georgia,"Songti SC",serif; }
+.chapter-reader-shell > header span { color: var(--muted); font-size: 12px; }
+.chapter-reader-shell article { max-width: 760px; margin: 0 auto; color: #29241d; font: 18px/2 "Microsoft YaHei",sans-serif; }
+.chapter-reader-shell article p { margin: 0 0 1.15em; white-space: pre-wrap; text-indent: 2em; }
+.chapter-reader-empty { max-width: 760px; margin: 90px auto; color: var(--muted); text-align: center; }
+
 .automation-panel { gap: 14px; }
 .automation-panel .automation-heading h2 { font-size: 25px; }
 .automation-task-details { max-height: none; overflow: visible; }
@@ -378,6 +409,12 @@ button.button-quiet:hover { text-decoration: underline; }
   .workspace-toast { right: 14px; bottom: 14px; }
   .delivery-target-form { grid-template-columns: 1fr; }
   .delivery-copy-row { align-items: stretch; flex-direction: column; }
+  .chapter-mode-tabs button { min-height: 42px; padding-inline: 8px; }
+  .chapter-context-navigation strong { order: -1; width: 100%; margin: 0 0 4px; }
+  .chapter-publish-summary { align-items: stretch; flex-direction: column; }
+  .chapter-publish-summary .publish-toggle { width: 100%; }
+  .chapter-reader-shell { padding: 28px 18px; }
+  .chapter-reader-shell article { font-size: 16px; line-height: 1.9; }
 }
 
 .danger-button { color: white; background: #9f3026; }

@@ -6,6 +6,7 @@ import { createNovelBackup, exportVolumeText, parseNovelBackup } from "@/modules
 import { createAutomationRun, getLatestAutomationRun, importCompletedAutomationNodes, listAutomationRuns, readAutomationArtifact, readAutomationManifest, reconcileAutomationStaleness, recoverInterruptedAutomationRun, refreshAutomationRunnerFiles, requestAutomationControl, restartAutomationFromNode, seedAutomationRunFromWorkspace } from "@/modules/novels/automation";
 import { createChapterAutomationRun, getLatestChapterAutomationRun, importCompletedChapterAutomationRun, listChapterAutomationRuns, readChapterAutomationArtifact, readChapterAutomationManifest, reconcileChapterAutomationStaleness, recoverInterruptedChapterAutomationRun, refreshChapterAutomationRunnerFiles, requestChapterAutomationControl } from "@/modules/novels/chapter-automation";
 import { inspectCodexChapterState, prepareCodexChapterTask, readCodexChapter, syncNovelCodexProject, writeCodexChapter } from "@/modules/novels/codex-project";
+import { assertChapterGenerationAllowed } from "@/modules/novels/chapter-progress";
 import { deliveryRepository } from "@/modules/novels/delivery";
 import { cancelDeliverySchema, queueDeliverySchema, saveDeliveryTargetSchema } from "@/modules/novels/delivery-schemas";
 import { novelRepository } from "@/modules/novels/repository";
@@ -70,6 +71,13 @@ function chapterAutomationRun(novelId: string, runId: string) {
   if (!run) throw new Error("正文自动生成任务不存在");
   refreshChapterAutomationRunnerFiles(run.runDir, run.manifest);
   return { workspace, ...run };
+}
+
+function assertNoActiveChapterAutomation(workspace: ReturnType<typeof workspaceFor>) {
+  const latest = getLatestChapterAutomationRun(workspace);
+  if (latest && (["pending", "running", "paused"].includes(latest.manifest.status) || (latest.manifest.status === "completed" && latest.manifest.nodes.some((node) => !node.imported)))) {
+    throw new Error("已有未结束或待导入的自动正文任务，请先完成该任务再使用单章生成");
+  }
 }
 
 export async function createNovelAction(input: unknown) {
@@ -211,7 +219,7 @@ export async function syncCodexProjectAction(input: unknown) {
 }
 
 export async function prepareCodexChapterTaskAction(input: unknown) {
-  try { const value = chapterTaskSchema.parse(input); const result = prepareCodexChapterTask(workspaceFor(value.novelId), value.chapterNumber); revalidatePath(`/novels/${value.novelId}`); return { ok: true as const, projectDir: result.projectDir, taskPath: result.taskPath, command: result.command }; } catch (error) { return failure(error); }
+  try { const value = chapterTaskSchema.parse(input); const workspace = workspaceFor(value.novelId); assertNoActiveChapterAutomation(workspace); const result = prepareCodexChapterTask(workspace, value.chapterNumber); revalidatePath(`/novels/${value.novelId}`); return { ok: true as const, projectDir: result.projectDir, taskPath: result.taskPath, command: result.command }; } catch (error) { return failure(error); }
 }
 
 export async function inspectCodexChapterAction(input: unknown) {
@@ -222,20 +230,30 @@ export async function previewCodexChapterAction(input: unknown) {
   try {
     const value = chapterTaskSchema.parse(input);
     const workspace = workspaceFor(value.novelId);
+    assertNoActiveChapterAutomation(workspace);
+    assertChapterGenerationAllowed(workspace, value.chapterNumber);
     const result = readCodexChapter(workspace, value.chapterNumber);
     const current = workspace.chapters.find((row) => Number(row.chapterNumber) === value.chapterNumber);
-    return { ok: true as const, title: result.title, content: result.content, filePath: result.filePath, databaseTitle: String(current?.title ?? ""), databaseContent: String(current?.content ?? ""), databaseUpdatedAt: databaseTimestamp(current?.updatedAt) };
+    return { ok: true as const, title: result.title, content: result.content, filePath: result.filePath, continuitySummary: result.continuitySummary, continuityState: result.continuityState, continuityRunId: result.continuityRunId, databaseTitle: String(current?.title ?? ""), databaseContent: String(current?.content ?? ""), databaseUpdatedAt: databaseTimestamp(current?.updatedAt) };
   } catch (error) { return failure(error); }
 }
 
 export async function importCodexChapterAction(input: unknown) {
   try {
     const value = importCodexChapterSchema.parse(input);
-    const result = readCodexChapter(workspaceFor(value.novelId), value.chapterNumber);
+    const workspace = workspaceFor(value.novelId);
+    assertNoActiveChapterAutomation(workspace);
+    assertChapterGenerationAllowed(workspace, value.chapterNumber);
+    const result = readCodexChapter(workspace, value.chapterNumber);
     if (result.title !== value.expectedFileTitle || result.content !== value.expectedFileContent) throw new Error("Codex 章节标题或正文文件在确认期间发生了变化，请重新读取后再导入");
-    novelRepository.importCodexChapter(value.novelId, value.chapterNumber, result.title, result.content, value.expectedUpdatedAt, value.expectedDatabaseTitle, value.expectedDatabaseContent);
+    if (result.continuitySummary !== value.expectedContinuitySummary || result.continuityState !== value.expectedContinuityState || result.continuityRunId !== value.expectedContinuityRunId) throw new Error("Codex 连续性事件或状态在确认期间发生了变化，请重新读取后再导入");
+    novelRepository.importCodexChapter(value.novelId, value.chapterNumber, result.title, result.content, value.expectedUpdatedAt, value.expectedDatabaseTitle, value.expectedDatabaseContent,
+      result.continuitySummary && result.continuityState && result.continuityRunId ? { runId: result.continuityRunId, summary: result.continuitySummary, state: result.continuityState } : undefined);
+    let warning: string | null = null;
+    try { writeCodexChapter(workspaceFor(value.novelId), value.chapterNumber, result.content); }
+    catch (error) { warning = `正文和连续性已导入数据库，但本地正文文件同步失败：${errorMessage(error)}`; }
     revalidatePath(`/novels/${value.novelId}`);
-    return { ok: true as const, title: result.title, content: result.content, filePath: result.filePath };
+    return { ok: true as const, title: result.title, content: result.content, filePath: result.filePath, warning };
   } catch (error) { return failure(error); }
 }
 

@@ -53,6 +53,15 @@ export function createNovelRepository(sqlite: Database.Database) {
       content=excluded.content,source_run_id=excluded.source_run_id,updated_at=excluded.updated_at`)
       .run(novelId, previous?.chapter_number ?? 0, currentRevision + 1, previous?.state_content ?? EMPTY_CONTINUITY, previous?.run_id ?? null, timestamp, timestamp);
   };
+  const protectClaimedDelivery = (novelId: string, chapterNumber: number) => {
+    const active = sqlite.prepare("select status from delivery_jobs where novel_id=? and chapter_number=? and platform='fanqie' and status in ('claimed','filled')")
+      .get(novelId, chapterNumber) as { status: string } | undefined;
+    if (active) throw new Error(`第${chapterNumber}章已被番茄扩展领取，请先取消或完成投递任务再修改正文`);
+  };
+  const staleReadyDelivery = (novelId: string, chapterNumber: number) => {
+    sqlite.prepare(`update delivery_jobs set status='stale',last_error='工作台中的章节已修改，请重新加入投递队列',updated_at=?
+      where novel_id=? and chapter_number=? and platform='fanqie' and status='ready'`).run(now(), novelId, chapterNumber);
+  };
 
   function versionPrevious(novelId: string, contentType: VersionedContentType, contentKey: string, table: string, where: string, args: unknown[], nextContent: string, contentColumn = "content") {
     const previous = sqlite.prepare(`select ${contentColumn} content from ${table} where ${where}`).get(...args) as { content: string } | undefined;
@@ -265,25 +274,48 @@ export function createNovelRepository(sqlite: Database.Database) {
       sqlite.transaction(() => {
         const current = sqlite.prepare("select title,content from chapters where novel_id=? and chapter_number=?").get(novelId, chapterNumber) as { title: string; content: string } | undefined;
         const nextTitle = title === undefined ? String(current?.title ?? "") : normalizeChapterTitle(title);
+        const chapterChanged = (current?.content ?? "") !== content || (current?.title ?? "") !== nextTitle;
+        if (chapterChanged) protectClaimedDelivery(novelId, chapterNumber);
         if (!draft) versionPrevious(novelId, "chapter", String(chapterNumber), "chapters", "novel_id=? and chapter_number=?", [novelId, chapterNumber], content);
         if ((current?.content ?? "") !== content) invalidateContinuityFrom(novelId, chapterNumber);
         const timestamp = now();
         sqlite.prepare(`insert into chapters (id,novel_id,chapter_number,title,content,status,is_draft,created_at,updated_at)
           values (?,?,?,?,?,?,?,?,?) on conflict(novel_id,chapter_number) do update set title=excluded.title,content=excluded.content,status=excluded.status,is_draft=excluded.is_draft,updated_at=excluded.updated_at`)
           .run(randomUUID(), novelId, chapterNumber, nextTitle, content, status, draft ? 1 : 0, timestamp, timestamp); touch(novelId);
+        if (chapterChanged) staleReadyDelivery(novelId, chapterNumber);
       })();
     },
 
-    importCodexChapter(novelId: string, chapterNumber: number, title: string, content: string, expectedUpdatedAt: number | null, expectedDatabaseTitle: string, expectedDatabaseContent: string) {
+    importCodexChapter(novelId: string, chapterNumber: number, title: string, content: string, expectedUpdatedAt: number | null, expectedDatabaseTitle: string, expectedDatabaseContent: string, continuity?: { runId: string; summary: string; state: string }) {
       sqlite.transaction(() => {
-        const current = sqlite.prepare("select title,content,updated_at from chapters where novel_id=? and chapter_number=?").get(novelId, chapterNumber) as { title: string; content: string; updated_at: number } | undefined;
+        const current = sqlite.prepare("select title,content,status,updated_at from chapters where novel_id=? and chapter_number=?").get(novelId, chapterNumber) as { title: string; content: string; status: ChapterStatus; updated_at: number } | undefined;
         if ((current?.updated_at ?? null) !== expectedUpdatedAt || (current?.title ?? "") !== expectedDatabaseTitle || (current?.content ?? "") !== expectedDatabaseContent) throw new Error("工作台中的章节标题或正文已在其他窗口更新，请重新读取 Codex 正文后再导入");
+        if (String(current?.content ?? "").trim()) throw new Error(`第${chapterNumber}章已有正文，普通 Codex 单章任务不能覆盖`);
+        if (current?.status === "published") throw new Error(`第${chapterNumber}章已经发布，不能由 Codex 单章任务覆盖`);
         versionPrevious(novelId, "chapter", String(chapterNumber), "chapters", "novel_id=? and chapter_number=?", [novelId, chapterNumber], content);
         if ((current?.content ?? "") !== content) invalidateContinuityFrom(novelId, chapterNumber);
         const timestamp = now();
         sqlite.prepare(`insert into chapters (id,novel_id,chapter_number,title,content,status,is_draft,created_at,updated_at)
           values (?,?,?,?,?,?,?,?,?) on conflict(novel_id,chapter_number) do update set title=excluded.title,content=excluded.content,status=excluded.status,is_draft=excluded.is_draft,updated_at=excluded.updated_at`)
           .run(randomUUID(), novelId, chapterNumber, normalizeChapterTitle(title), content, "saved", 0, timestamp, timestamp);
+        if (continuity) {
+          sqlite.prepare("update chapter_continuity_events set invalidated_at=? where novel_id=? and chapter_number>=? and invalidated_at is null and run_id<>?")
+            .run(timestamp, novelId, chapterNumber, continuity.runId);
+          sqlite.prepare(`insert into chapter_continuity_events
+            (id,novel_id,chapter_number,run_id,chapter_hash,summary,state_content,invalidated_at,created_at)
+            values (?,?,?,?,?,?,?,?,?) on conflict(novel_id,run_id,chapter_number) do update set
+            chapter_hash=excluded.chapter_hash,summary=excluded.summary,state_content=excluded.state_content,invalidated_at=null,created_at=excluded.created_at`)
+            .run(randomUUID(), novelId, chapterNumber, continuity.runId, digest(content), continuity.summary, continuity.state, null, timestamp);
+          const currentState = sqlite.prepare("select revision,source_run_id,through_chapter,content from novel_continuity_states where novel_id=?")
+            .get(novelId) as { revision: number; source_run_id: string | null; through_chapter: number; content: string } | undefined;
+          const alreadyPromoted = currentState?.source_run_id === continuity.runId && currentState.through_chapter === chapterNumber && currentState.content === continuity.state;
+          if (!alreadyPromoted) {
+            sqlite.prepare(`insert into novel_continuity_states (novel_id,through_chapter,revision,content,source_run_id,created_at,updated_at)
+              values (?,?,?,?,?,?,?) on conflict(novel_id) do update set through_chapter=excluded.through_chapter,revision=excluded.revision,
+              content=excluded.content,source_run_id=excluded.source_run_id,updated_at=excluded.updated_at`)
+              .run(novelId, chapterNumber, Number(currentState?.revision ?? 0) + 1, continuity.state, continuity.runId, timestamp, timestamp);
+          }
+        }
         touch(novelId);
       })();
     },
@@ -312,6 +344,7 @@ export function createNovelRepository(sqlite: Database.Database) {
             throw new Error(`第${chapter.chapterNumber}章已在任务创建后被修改，请新建正文生成任务`);
           }
           if (current?.status === "published") throw new Error(`第${chapter.chapterNumber}章已经发布，不能由自动任务覆盖`);
+          if (String(current?.content ?? "").trim() || chapter.expectedDatabaseContent.trim()) throw new Error(`第${chapter.chapterNumber}章已有正文；自动正文只能连续追加，不能覆盖已有章节`);
           return { chapter: { ...chapter, title }, current, changed: true };
         });
         const changedRows = rows.filter((row) => row.changed);

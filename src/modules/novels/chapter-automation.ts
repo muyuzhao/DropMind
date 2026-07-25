@@ -14,6 +14,7 @@ import { chapterFileName, parseGeneratedChapter } from "./chapter-title";
 import { rangeForChapter } from "./ranges";
 import type { ChapterStatus } from "../../lib/novel-db/schema";
 import type { NovelWorkspaceData } from "./types";
+import { assertChapterGenerationAllowed } from "./chapter-progress";
 
 type ChapterAutomationOptions = { rootDir?: string; now?: () => Date };
 
@@ -138,6 +139,22 @@ function rangeLabel(start: number, end: number) {
   return `${chapterLabel(start)}-${chapterLabel(end)}`;
 }
 
+const CHAPTER_AUTOMATION_AGENTS = `# DropMind 自动正文运行目录
+
+- 本目录由 DropMind 自动正文流水线管理，不执行上级目录中的手动“执行当前任务”流程。
+- 每次调用收到的用户输入就是本节点的唯一任务；同一内容保存在 manifest 当前节点对应的 inputs/第XXX章.md。
+- 不要读取或寻找《当前任务.md》，不要写入“待导入”目录，也不要自行创建其他任务文件。
+- 只读取节点输入列出的资料；最终回复必须严格遵守其中的 DROPMIND_TITLE、DROPMIND_CHAPTER_EVENT 和 DROPMIND_CONTINUITY 协议。
+- 运行环境为只读；不要尝试修改任何文件，DropMind 会捕获并校验最终回复。
+`;
+
+function ensureChapterAutomationAgents(runDir: string) {
+  const filePath = path.join(runDir, "AGENTS.override.md");
+  if (fs.existsSync(filePath) && fs.readFileSync(filePath, "utf8") === CHAPTER_AUTOMATION_AGENTS) return false;
+  atomicWrite(filePath, CHAPTER_AUTOMATION_AGENTS);
+  return true;
+}
+
 function stepContent(workspace: NovelWorkspaceData, key: string) {
   return String(workspace.steps.find((row) => row.key === key)?.content ?? "").trim();
 }
@@ -240,6 +257,7 @@ function validateRange(workspace: NovelWorkspaceData, startChapter: number, chap
   if (!Number.isInteger(chapterCount) || chapterCount < 1 || chapterCount > 10) throw new Error("单次只能连续生成 1–10 章");
   const endChapter = startChapter + chapterCount - 1;
   if (endChapter > 60) throw new Error("生成范围不能超过第 60 章");
+  assertChapterGenerationAllowed(workspace, startChapter);
   const missing: string[] = [];
   if (!String(workspace.novel.selectedTopic ?? "").trim()) missing.push("最终选题");
   if (!String(workspace.novel.firstVolumeOutline ?? "").trim()) missing.push("本卷大纲");
@@ -253,6 +271,7 @@ function validateRange(workspace: NovelWorkspaceData, startChapter: number, chap
     if (!chapterOutline(workspace, chapter)) missing.push(`第${chapter}章分章大纲`);
     const current = chapterRow(workspace, chapter);
     if (String(current?.status ?? "not_started") === "published") throw new Error(`第${chapter}章已经发布，不能自动覆盖`);
+    if (String(current?.content ?? "").trim()) throw new Error(`第${chapter}章已有正文；自动正文只能连续追加，不能覆盖已有章节`);
   }
   if (startChapter > 1 && !String(chapterRow(workspace, startChapter - 1)?.content ?? "").trim()) missing.push(`第${startChapter - 1}章正文`);
   if (missing.length) throw new Error(`自动生成正文前还缺少：${[...new Set(missing)].join("、")}`);
@@ -345,6 +364,7 @@ export function createChapterAutomationRun(workspace: NovelWorkspaceData, input:
   for (const node of nodes) atomicWrite(path.join(runDir, node.inputPath), chapterPrompt(node.chapterNumber, input.startChapter));
   atomicWrite(path.join(runDir, manifest.continuityBasePath!), `${continuityBase.content.trim()}\n`);
   atomicWrite(path.join(runDir, manifest.continuityPath), `${continuityBase.content.trim()}\n`);
+  ensureChapterAutomationAgents(runDir);
   writeAutomationRunnerFiles(runDir);
   writeJson(path.join(runDir, "control.json"), { action: "run", mode: "all", targetNodeId: null, requestedAt: createdAt } satisfies AutomationControl);
   writeJson(path.join(runDir, "manifest.json"), manifest);
@@ -377,6 +397,7 @@ export function getLatestChapterAutomationRun(workspace: NovelWorkspaceData, opt
 export function refreshChapterAutomationRunnerFiles(runDir: string, manifest: ChapterAutomationManifest, options: ChapterAutomationOptions = {}) {
   if (manifest.status === "running") return false;
   let changed = false;
+  if (ensureChapterAutomationAgents(runDir)) changed = true;
   const runner = automationRunnerDefinition(runDir);
   if (manifest.runner.command !== runner.command) { manifest.runner.command = runner.command; changed = true; }
   if (manifest.runner.scriptVersion !== AUTOMATION_RUNNER_VERSION) {

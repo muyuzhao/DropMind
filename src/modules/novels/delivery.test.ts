@@ -58,14 +58,39 @@ describe("fanqie delivery repository", () => {
     expect(delivery.getNovelState(firstNovel.id).jobs[0]).toMatchObject({ id: first.id, status: "ready" });
   });
 
+  it("does not let an exact link skip an earlier queued chapter", () => {
+    const novel = novels.createNovel({ name: "顺序投递", referenceTitle: "", referenceSummary: "" });
+    novels.saveChapter(novel.id, 29, "第二十九章正文", "saved", false, "先投这一章");
+    novels.saveChapter(novel.id, 30, "第三十章正文", "saved", false, "后投这一章");
+    delivery.saveTarget({ novelId: novel.id, bookName: "番茄作品", manageUrl: "https://fanqienovel.com/main/writer/book-manage", defaultVolume: "第一卷" });
+    const later = delivery.queueChapter(novel.id, 30, "2026-07-21");
+    const earlier = delivery.queueChapter(novel.id, 29, "2026-07-20");
+    const token = delivery.getNovelState(novel.id).connectionToken;
+
+    expect(() => delivery.claimNext(token, later.id)).toThrow("第29章仍在投递队列");
+    expect(delivery.claimNext(token)).toMatchObject({ id: earlier.id, chapterNumber: 29 });
+    delivery.updateFromExtension(token, earlier.id, "submitted");
+    expect(delivery.claimNext(token, later.id)).toMatchObject({ id: later.id, chapterNumber: 30 });
+  });
+
   it("marks a queued snapshot stale when the chapter changes", () => {
     const novel = savedChapter();
     delivery.queueChapter(novel.id, 1, "2026-07-20");
     novels.saveChapter(novel.id, 1, "修改后的正文", "saved", false, "新标题");
+    expect(delivery.getNovelState(novel.id).jobs[0]).toMatchObject({ status: "stale", lastError: "工作台中的章节已修改，请重新加入投递队列" });
     const token = delivery.getNovelState(novel.id).connectionToken;
 
     expect(delivery.claimNext(token)).toBeNull();
     expect(delivery.getNovelState(novel.id).jobs[0]).toMatchObject({ status: "stale", lastError: "工作台中的章节已修改，请重新加入投递队列" });
+  });
+
+  it("blocks chapter edits while the extension owns the delivery task", () => {
+    const novel = savedChapter();
+    delivery.queueChapter(novel.id, 1, "2026-07-20");
+    delivery.claimNext(delivery.getNovelState(novel.id).connectionToken);
+
+    expect(() => novels.saveChapter(novel.id, 1, "领取后的新正文", "saved", false, "新标题")).toThrow("已被番茄扩展领取");
+    expect(novels.getNovelWorkspace(novel.id)!.chapters[0]).toMatchObject({ title: "初入王府", content: "第一章正文" });
   });
 
   it("rejects an invalid extension token", () => {
