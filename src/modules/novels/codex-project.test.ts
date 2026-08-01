@@ -8,6 +8,33 @@ import { createAutomationRun, listAutomationRuns, readAutomationManifest, refres
 import { createNovelRepository } from "./repository";
 import { inspectCodexChapterState, prepareCodexChapterTask, readCodexChapter, syncNovelCodexProject, writeCodexChapter } from "./codex-project";
 
+function continuityState(chapterNumber: number, fact = "王妃持有密信") {
+  return `# 正文连续性状态
+<!-- DROPMIND_STATE_THROUGH: ${chapterNumber} -->
+
+截至第${chapterNumber}章。
+
+## 当前时空
+
+- 王府深夜。
+
+## 活跃人物状态与知情差
+
+- 王妃：${fact}。
+
+## 未解决线索
+
+- 【F001】【P0】密信来源已出现；送信人未知；下一章查验。
+
+## 硬事实
+
+- 密信仍由王妃保管。
+
+## 下一章交接
+
+- 从王妃拆信开始。`;
+}
+
 describe("Codex novel project files", () => {
   let rootDir: string;
   let sqlite: Database.Database;
@@ -57,6 +84,8 @@ describe("Codex novel project files", () => {
     expect(task).toContain("<!-- DROPMIND_CHAPTER_EVENT -->");
     expect(task).toContain("<!-- DROPMIND_CONTINUITY -->");
     expect(task).toContain("<!-- DROPMIND_STATE_THROUGH: 2 -->");
+    expect(task).toContain("不是在旧快照末尾追加内容");
+    expect(task).toContain("绝对不得超过5000字符");
     expect(task).toContain("当前任务的连续性基线：当前任务连续性.md");
     expect(fs.readFileSync(path.join(result.projectDir, "当前任务连续性.md"), "utf8")).toContain("第1章");
     expect(result.command).toBe("执行当前任务");
@@ -102,7 +131,7 @@ describe("Codex novel project files", () => {
     const workspace = completeWorkspace();
     const info = prepareCodexChapterTask(workspace, 2, { rootDir });
     const pendingPath = path.join(info.projectDir, "待导入", "第002章.md");
-    fs.writeFileSync(pendingPath, `<!-- DROPMIND_TITLE: 夜闯王府 -->\n第二章纯正文\n\n<!-- DROPMIND_CHAPTER_EVENT -->\n\n- [伏笔-001] 王妃拿到密信。\n\n<!-- DROPMIND_CONTINUITY -->\n\n# 正文连续性状态\n<!-- DROPMIND_STATE_THROUGH: 2 -->\n\n截至第2章，王妃持有密信。`, "utf8");
+    fs.writeFileSync(pendingPath, `<!-- DROPMIND_TITLE: 夜闯王府 -->\n第二章纯正文\n\n<!-- DROPMIND_CHAPTER_EVENT -->\n\n- [伏笔-001] 王妃拿到密信。\n\n<!-- DROPMIND_CONTINUITY -->\n\n${continuityState(2)}`, "utf8");
 
     const result = readCodexChapter(workspace, 2, { rootDir });
     expect(result).toMatchObject({

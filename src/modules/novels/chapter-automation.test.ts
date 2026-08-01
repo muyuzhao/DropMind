@@ -15,6 +15,33 @@ import {
   requestChapterAutomationControl,
 } from "./chapter-automation";
 
+function continuityState(chapterNumber: number, fact = `下一章延续事实${chapterNumber}`) {
+  return `# 正文连续性状态
+<!-- DROPMIND_STATE_THROUGH: ${chapterNumber} -->
+
+截至第${chapterNumber}章。
+
+## 当前时空
+
+- 当前场景仍在继续。
+
+## 活跃人物状态与知情差
+
+- 主角：掌握本章新增信息。
+
+## 未解决线索
+
+- 【F001】【P0】线索已出现；真相未知；下一章继续。
+
+## 硬事实
+
+- ${fact}。
+
+## 下一章交接
+
+- 从当前动作继续。`;
+}
+
 describe("chapter automation", () => {
   let rootDir: string;
   let sqlite: Database.Database;
@@ -50,7 +77,7 @@ describe("chapter automation", () => {
       fs.writeFileSync(path.join(runDir, node.outputPath), `<!-- DROPMIND_TITLE: 自动标题${node.chapterNumber} -->\n${content[node.chapterNumber]}`, "utf8");
       if (manifest.version >= 3) {
         fs.writeFileSync(path.join(runDir, manifest.continuityEventsDir!, `第${String(node.chapterNumber).padStart(3, "0")}章.md`), `第${node.chapterNumber}章发生的连续性事件`, "utf8");
-        fs.writeFileSync(path.join(runDir, manifest.continuityStatesDir!, `第${String(node.chapterNumber).padStart(3, "0")}章.md`), `# 正文连续性状态\n<!-- DROPMIND_STATE_THROUGH: ${node.chapterNumber} -->\n\n> 截至第${node.chapterNumber}章\n\n- 下一章延续事实${node.chapterNumber}`, "utf8");
+        fs.writeFileSync(path.join(runDir, manifest.continuityStatesDir!, `第${String(node.chapterNumber).padStart(3, "0")}章.md`), continuityState(node.chapterNumber), "utf8");
       }
     }
     fs.writeFileSync(path.join(runDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
@@ -70,6 +97,8 @@ describe("chapter automation", () => {
     expect(firstPrompt).not.toContain("不可重复塞进节点的核心设定");
     expect(firstPrompt).toContain("inputs/continuity-base.md");
     expect(firstPrompt).toContain("DROPMIND_CHAPTER_EVENT");
+    expect(firstPrompt).toContain("不是在旧快照末尾追加内容");
+    expect(firstPrompt).toContain("绝对不得超过5000字符");
     expect(secondPrompt).toContain("outputs/第001章.md");
     const localAgents = fs.readFileSync(path.join(result.runDir, "AGENTS.override.md"), "utf8");
     expect(localAgents).toContain("本节点的唯一任务");
@@ -82,7 +111,8 @@ describe("chapter automation", () => {
     const result = createChapterAutomationRun(repo.getNovelWorkspace(novelId)!, { startChapter: 1, chapterCount: 1 }, { rootDir });
     requestChapterAutomationControl(result.runDir, "run", { mode: "retry-node", targetNodeId: "chapter-1" });
     const fakeCli = path.join(rootDir, "fake-chapter-codex.cmd");
-    fs.writeFileSync(fakeCli, `@echo off\r\nchcp 65001 >nul\r\nset out=\r\n:args\r\nif "%~1"=="" goto ready\r\nif "%~1"=="--output-last-message" set out=%~2\r\nshift\r\ngoto args\r\n:ready\r\nif exist "%~dp0failed.once" goto complete\r\n>"%~dp0failed.once" echo failed\r\n>"%out%" echo ^<!-- DROPMIND_TITLE: 缺少标记的结果 --^>\r\n>>"%out%" echo 这次故意缺少章节连续性事件标记。\r\nexit /b 0\r\n:complete\r\n>"%out%" echo ^<!-- DROPMIND_TITLE: 第一章标题 --^>\r\n>>"%out%" echo 这是自动生成的第一章正文。\r\n>>"%out%" echo ^<!-- DROPMIND_CHAPTER_EVENT --^>\r\n>>"%out%" echo event-one\r\n>>"%out%" echo ^<!-- DROPMIND_CONTINUITY --^>\r\n>>"%out%" echo # 正文连续性状态\r\n>>"%out%" echo ^<!-- DROPMIND_STATE_THROUGH: 1 --^>\r\n>>"%out%" echo fact-one\r\nexit /b 0\r\n`, "utf8");
+    const encodedOutput = Buffer.from(`<!-- DROPMIND_TITLE: 第一章标题 -->\n这是自动生成的第一章正文。\n<!-- DROPMIND_CHAPTER_EVENT -->\nevent-one\n<!-- DROPMIND_CONTINUITY -->\n${continuityState(1, "fact-one")}`, "utf8").toString("base64");
+    fs.writeFileSync(fakeCli, `@echo off\r\nchcp 65001 >nul\r\nset out=\r\n:args\r\nif "%~1"=="" goto ready\r\nif "%~1"=="--output-last-message" set out=%~2\r\nshift\r\ngoto args\r\n:ready\r\nif exist "%~dp0failed.once" goto complete\r\n>"%~dp0failed.once" echo failed\r\n>"%out%" echo ^<!-- DROPMIND_TITLE: 缺少标记的结果 --^>\r\n>>"%out%" echo 这次故意缺少章节连续性事件标记。\r\nexit /b 0\r\n:complete\r\npowershell.exe -NoLogo -NoProfile -Command "[IO.File]::WriteAllBytes('%out%', [Convert]::FromBase64String('${encodedOutput}'))"\r\nexit /b 0\r\n`, "utf8");
 
     const executed = spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.join(result.runDir, "run-pipeline.ps1")], {
       cwd: result.runDir,

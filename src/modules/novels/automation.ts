@@ -86,7 +86,7 @@ function durationSeconds(startedAt: string | null, endedAt: string | null) {
   return Number.isFinite(milliseconds) ? Math.max(0, Math.round(milliseconds / 1000)) : null;
 }
 
-export const AUTOMATION_RUNNER_VERSION = 17;
+export const AUTOMATION_RUNNER_VERSION = 18;
 
 function slash(value: string) {
   return value.replaceAll("\\", "/");
@@ -447,9 +447,17 @@ foreach ($Node in $Manifest.nodes) {
         $ContinuityUpdate = $StateParts[1].Trim()
         if (-not $ChapterEvent) { throw "章节连续性事件为空" }
         if (-not ($ContinuityUpdate.StartsWith('# 正文连续性状态'))) { throw '连续性状态必须以 Markdown 一级标题开头' }
-        if ($ContinuityUpdate.Length -gt 20000) { throw "连续性状态超过20000字符" }
+        if ($ContinuityUpdate.Length -gt 5000) { throw "连续性状态超过5000字符" }
         $ChapterMarker = "<!-- DROPMIND_STATE_THROUGH: " + [string]$Node.chapterNumber + " -->"
         if (-not ($ContinuityUpdate.Contains($ChapterMarker))) { throw "连续性状态未标明当前章节" }
+        $RequiredSections = @("当前时空", "活跃人物状态与知情差", "未解决线索", "硬事实", "下一章交接")
+        $ActualSections = @([regex]::Matches($ContinuityUpdate, '(?m)^##[ \t]+([^\r\n]+?)[ \t]*$') | ForEach-Object { $_.Groups[1].Value.Trim() })
+        if (($ActualSections.Count -ne $RequiredSections.Count) -or (($ActualSections -join "|") -ne ($RequiredSections -join "|"))) {
+          throw "连续性状态必须依次且仅包含五个规定栏目"
+        }
+        $HandoffMatch = [regex]::Match($ContinuityUpdate, '(?ms)^##[ \t]+下一章交接[ \t]*\r?\n(.*)$')
+        $HandoffCount = if ($HandoffMatch.Success) { @([regex]::Matches($HandoffMatch.Groups[1].Value, '(?m)^[ \t]*[-*+][ \t]+')).Count } else { 0 }
+        if ($HandoffCount -gt 6) { throw "连续性状态的下一章交接不得超过6条" }
       } else {
         $Parts = $Raw -split [regex]::Escape($Marker), 2
         $Primary = $Parts[0].Trim()
