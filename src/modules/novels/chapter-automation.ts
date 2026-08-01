@@ -15,6 +15,7 @@ import { rangeForChapter } from "./ranges";
 import type { ChapterStatus } from "../../lib/novel-db/schema";
 import type { NovelWorkspaceData } from "./types";
 import { assertChapterGenerationAllowed } from "./chapter-progress";
+import { buildContinuityStateInstructions, validateContinuityState } from "./continuity-state";
 
 type ChapterAutomationOptions = { rootDir?: string; now?: () => Date };
 
@@ -285,7 +286,40 @@ function chapterPrompt(chapter: number, startChapter: number) {
     : chapter === startChapter
       ? `- 上一章正文：../../正文/（在该目录中查找以“第${chapterLabel(chapter - 1)}章”开头的 Markdown 文件）`
       : `- 上一章正文：outputs/第${chapterLabel(chapter - 1)}章.md`;
-  return `# DropMind 自动正文节点：第${chapter}章\n\n你只创作第${chapter}章正文。小说资料已经保存在本地文件中，不要要求用户重复粘贴；记忆不确定、称谓不统一或发现冲突时，主动读取对应资料核对。连续性状态只是已确认正文的检索索引，若摘要与原文冲突，以已确认正文为准。\n\n## 本章必须读取\n\n- 正文创作要求：../../资料/正文创作要求.md\n- 本章剧情单元：../../资料/剧情单元/第${rangeLabel(range.start, range.end)}章.md\n- 本章分章大纲：../../资料/分章大纲/第${rangeLabel(range.start, range.end)}章.md\n${previous}\n- 当前任务的最新连续性状态：outputs/continuity.md\n\n## 其他资料位置（按需读取）\n\n- 任务创建时的不可变连续性基线：inputs/continuity-base.md\n- 作品信息：../../资料/作品信息.md\n- 已选选题：../../资料/选题.md\n- 分卷大纲：../../资料/分卷大纲.md\n- 本卷大纲：../../资料/本卷大纲.md\n- 核心设定：../../资料/核心设定.md\n- 更早正文：../../正文/\n\n## 输出要求\n\n1. 从分章大纲中只定位并创作第${chapter}章，不提前写下一章。\n2. 衔接上一章，保持人物、时间、地点、信息差、伏笔和情绪变化连续。\n3. 根据本章正文拟定一个准确、有吸引力且不剧透核心反转的章节标题，不包含“第X章”前缀，最多60个字符。\n4. 最终回复第一行必须是精确格式：<!-- DROPMIND_TITLE: 章节标题 -->\n5. 标题标记后输出可直接入库的纯正文，正文中不重复章节标题，不写过程说明或总结。\n6. 正文结束后另起一行输出精确标记：<!-- DROPMIND_CHAPTER_EVENT -->\n7. 事件标记后输出一份简短 Markdown，只记录本章实际新增、改变、推进或解决的连续性事件，并保留或引用已有伏笔编号。\n8. 事件之后另起一行输出精确标记：<!-- DROPMIND_CONTINUITY -->\n9. 连续性标记后输出完整的最新状态快照，第一行必须是“# 正文连续性状态”，第二行必须是精确标记“<!-- DROPMIND_STATE_THROUGH: ${chapter} -->”，正文中再明确写出“截至第${chapter}章”。状态只保留仍有效的当前时空、活跃人物状态与知情差、未解决线索、硬事实和下一章交接；未解决线索使用稳定编号，除非本章明确解决不得遗漏。已解决历史只留在本章事件中。\n10. 状态快照必须控制在20000个字符以内，不得把未来大纲写成已经发生的事实。\n`;
+  return `# DropMind 自动正文节点：第${chapter}章
+
+你只创作第${chapter}章正文。小说资料已经保存在本地文件中，不要要求用户重复粘贴；记忆不确定、称谓不统一或发现冲突时，主动读取对应资料核对。连续性状态只是已确认正文的检索索引，若摘要与原文冲突，以已确认正文为准。
+
+## 本章必须读取
+
+- 正文创作要求：../../资料/正文创作要求.md
+- 本章剧情单元：../../资料/剧情单元/第${rangeLabel(range.start, range.end)}章.md
+- 本章分章大纲：../../资料/分章大纲/第${rangeLabel(range.start, range.end)}章.md
+${previous}
+- 当前任务的最新连续性状态：outputs/continuity.md
+
+## 其他资料位置（按需读取）
+
+- 任务创建时的不可变连续性基线：inputs/continuity-base.md
+- 作品信息：../../资料/作品信息.md
+- 已选选题：../../资料/选题.md
+- 分卷大纲：../../资料/分卷大纲.md
+- 本卷大纲：../../资料/本卷大纲.md
+- 核心设定：../../资料/核心设定.md
+- 更早正文：../../正文/
+
+## 输出要求
+
+1. 从分章大纲中只定位并创作第${chapter}章，不提前写下一章。
+2. 衔接上一章，保持人物、时间、地点、信息差、伏笔和情绪变化连续。
+3. 根据本章正文拟定一个准确、有吸引力且不剧透核心反转的章节标题，不包含“第X章”前缀，最多60个字符。
+4. 最终回复第一行必须是精确格式：<!-- DROPMIND_TITLE: 章节标题 -->
+5. 标题标记后输出可直接入库的纯正文，正文中不重复章节标题，不写过程说明或总结。
+6. 正文结束后另起一行输出精确标记：<!-- DROPMIND_CHAPTER_EVENT -->
+7. 事件标记后输出一份简短 Markdown，只记录本章实际新增、改变、推进或解决的连续性事件，并保留或引用已有伏笔编号。
+8. 事件之后另起一行输出精确标记：<!-- DROPMIND_CONTINUITY -->
+9. ${buildContinuityStateInstructions(chapter)}
+`;
 }
 
 function makeRunId(now: Date) {
@@ -459,9 +493,7 @@ function readContinuityArtifacts(runDir: string, manifest: ChapterAutomationMani
   const continuitySummary = fs.readFileSync(eventPath, "utf8").trim();
   const continuityState = fs.readFileSync(statePath, "utf8").trim();
   if (!continuitySummary) throw new Error(`${node.label}连续性事件为空`);
-  if (!continuityState.startsWith("# 正文连续性状态")) throw new Error(`${node.label}连续性状态标题无效`);
-  if (!continuityState.includes(`<!-- DROPMIND_STATE_THROUGH: ${node.chapterNumber} -->`)) throw new Error(`${node.label}连续性状态未标明正确章节`);
-  if (continuityState.length > 20_000) throw new Error(`${node.label}连续性状态超过20000字符`);
+  validateContinuityState(continuityState, node.chapterNumber);
   return { continuitySummary, continuityState };
 }
 

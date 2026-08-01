@@ -234,7 +234,7 @@ export async function previewCodexChapterAction(input: unknown) {
     assertChapterGenerationAllowed(workspace, value.chapterNumber);
     const result = readCodexChapter(workspace, value.chapterNumber);
     const current = workspace.chapters.find((row) => Number(row.chapterNumber) === value.chapterNumber);
-    return { ok: true as const, title: result.title, content: result.content, filePath: result.filePath, continuitySummary: result.continuitySummary, continuityState: result.continuityState, continuityRunId: result.continuityRunId, databaseTitle: String(current?.title ?? ""), databaseContent: String(current?.content ?? ""), databaseUpdatedAt: databaseTimestamp(current?.updatedAt) };
+    return { ok: true as const, title: result.title, content: result.content, filePath: result.filePath, continuitySummary: result.continuitySummary, continuityState: result.continuityState, continuityRunId: result.continuityRunId, continuityWarning: result.continuityWarning, databaseTitle: String(current?.title ?? ""), databaseContent: String(current?.content ?? ""), databaseUpdatedAt: databaseTimestamp(current?.updatedAt) };
   } catch (error) { return failure(error); }
 }
 
@@ -249,9 +249,9 @@ export async function importCodexChapterAction(input: unknown) {
     if (result.continuitySummary !== value.expectedContinuitySummary || result.continuityState !== value.expectedContinuityState || result.continuityRunId !== value.expectedContinuityRunId) throw new Error("Codex 连续性事件或状态在确认期间发生了变化，请重新读取后再导入");
     novelRepository.importCodexChapter(value.novelId, value.chapterNumber, result.title, result.content, value.expectedUpdatedAt, value.expectedDatabaseTitle, value.expectedDatabaseContent,
       result.continuitySummary && result.continuityState && result.continuityRunId ? { runId: result.continuityRunId, summary: result.continuitySummary, state: result.continuityState } : undefined);
-    let warning: string | null = null;
+    let warning: string | null = result.continuityWarning ?? null;
     try { writeCodexChapter(workspaceFor(value.novelId), value.chapterNumber, result.content); }
-    catch (error) { warning = `正文和连续性已导入数据库，但本地正文文件同步失败：${errorMessage(error)}`; }
+    catch (error) { warning = [warning, `正文和连续性已导入数据库，但本地正文文件同步失败：${errorMessage(error)}`].filter(Boolean).join("；"); }
     revalidatePath(`/novels/${value.novelId}`);
     return { ok: true as const, title: result.title, content: result.content, filePath: result.filePath, warning };
   } catch (error) { return failure(error); }

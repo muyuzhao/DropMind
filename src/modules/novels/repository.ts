@@ -6,7 +6,7 @@ import { stripLegacyPlaceholders } from "./structured-prompts";
 import { DEFAULT_PROMPT_TEMPLATES } from "./templates";
 import { normalizeChapterTitle } from "./chapter-title";
 import type { NovelBackupWorkspace } from "./backup";
-import type { ChapterContinuityEventData, ChapterData, ChapterOutlineData, ContentVersionData, NovelContinuityStateData, NovelData, NovelListItem, NovelStepData, NovelWorkspaceData, PromptSchemeData, PromptSchemeSummary, PromptTemplateData, StoryUnitData, VersionedContentType } from "./types";
+import type { ChapterContinuityEventData, ChapterData, ChapterOutlineData, ContentVersionData, NovelContinuityStateData, NovelData, NovelListItem, NovelStepData, NovelWorkspaceData, PromptSchemeData, PromptSchemeSummary, PromptTemplateData, ReadableChapter, ReadableNovel, ReadableNovelSummary, StoryUnitData, VersionedContentType } from "./types";
 
 type CreateNovelInput = { name: string; referenceTitle: string; referenceSummary: string };
 type Row = Record<string, unknown>;
@@ -142,6 +142,23 @@ export function createNovelRepository(sqlite: Database.Database) {
         (select count(*) from chapters c where c.novel_id=n.id and c.content<>'') completed_count,
         (select count(*) from chapters c where c.novel_id=n.id and c.status='published') published_count
         from novels n order by n.updated_at desc`);
+    },
+
+    listReadableNovels() {
+      return all<ReadableNovelSummary>(`select n.id,n.name,count(c.id) chapter_count,
+        min(c.chapter_number) first_chapter,max(c.chapter_number) latest_chapter
+        from novels n join chapters c on c.novel_id=n.id and trim(c.content)<>''
+        group by n.id,n.name order by n.updated_at desc`);
+    },
+
+    getReadableNovel(id: string): ReadableNovel | null {
+      const novel = one<Pick<ReadableNovel, "id" | "name">>("select id,name from novels where id=?", id);
+      if (!novel) return null;
+      return {
+        ...novel,
+        chapters: all<ReadableChapter>(`select chapter_number,title,content from chapters
+          where novel_id=? and trim(content)<>'' order by chapter_number`, id),
+      };
     },
 
     getNovel(id: string) { return one<NovelRecord>("select * from novels where id = ?", id); },

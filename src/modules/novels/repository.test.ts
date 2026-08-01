@@ -20,6 +20,30 @@ describe("novel repository", () => {
     expect(repo.getTemplates(novel.id)).toHaveLength(8);
   });
 
+  it("exposes only novels and chapters that have readable body text", () => {
+    const readable = repo.createNovel({ name: "Readable", referenceTitle: "", referenceSummary: "" });
+    const empty = repo.createNovel({ name: "Empty", referenceTitle: "", referenceSummary: "" });
+    repo.saveChapter(readable.id, 3, "Body three", "saved", false, "Third");
+    repo.saveChapter(readable.id, 5, "Body five", "saved", false, "Fifth");
+    repo.saveChapter(empty.id, 1, "   ", "saved", false, "Blank");
+
+    expect(repo.listReadableNovels()).toEqual([{
+      id: readable.id,
+      name: "Readable",
+      chapterCount: 2,
+      firstChapter: 3,
+      latestChapter: 5,
+    }]);
+    expect(repo.getReadableNovel(readable.id)).toEqual({
+      id: readable.id,
+      name: "Readable",
+      chapters: [
+        { chapterNumber: 3, title: "Third", content: "Body three" },
+        { chapterNumber: 5, title: "Fifth", content: "Body five" },
+      ],
+    });
+  });
+
   it("imports a complete JSON backup as a separate custom novel", () => {
     const novel = repo.createNovel({ name: "测试小说", referenceTitle: "参考书", referenceSummary: "简介" });
     repo.updateNovel(novel.id, { selectedTopic: "最终选题", firstVolumeOutline: "本卷大纲" });
