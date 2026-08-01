@@ -15,7 +15,9 @@ if not exist "node_modules\next\dist\bin\next" (
   if errorlevel 1 pause & exit /b 1
 )
 
-echo Novel Workbench: http://127.0.0.1:3000
+echo Novel Workbench on this computer: http://localhost:3000
+echo Read-only mobile library on home Wi-Fi: http://192.168.1.4:3000/read
+echo If the Wi-Fi address changes, run ipconfig and use the current WLAN IPv4 address with port 3000.
 echo Keep this window open. Press Ctrl+C to stop.
-node "node_modules\next\dist\bin\next" dev -H 127.0.0.1
+node "node_modules\next\dist\bin\next" dev -H 0.0.0.0
 pause

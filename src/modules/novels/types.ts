@@ -63,3 +63,19 @@ export type NovelWorkspaceData = {
 export type PromptSchemeSummary = { id: string; name: string; description: string; isSystem: DraftFlag; isDefault: DraftFlag; createdAt: number; updatedAt: number };
 export type PromptSchemeData = PromptSchemeSummary & { templates: PromptTemplateData[] };
 export type NovelListItem = NovelData & { completedCount: number; publishedCount: number };
+
+export type ReadableNovelSummary = {
+  id: string;
+  name: string;
+  chapterCount: number;
+  firstChapter: number;
+  latestChapter: number;
+};
+
+export type ReadableChapter = Pick<ChapterData, "chapterNumber" | "title" | "content">;
+
+export type ReadableNovel = {
+  id: string;
+  name: string;
+  chapters: ReadableChapter[];
+};
