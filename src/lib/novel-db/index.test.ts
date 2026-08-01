@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { initializeNovelDatabase } from "./initialize";
-import { stepKeyValues } from "./schema";
+import { promptTemplateKeyValues, stepKeyValues } from "./schema";
+import { FANTASY_CONFLICT_SCHEME_ID } from "../../modules/novels/fantasy-conflict-templates";
 
 describe("initializeNovelDatabase", () => {
   it("creates every novel workbench table", () => {
@@ -17,6 +18,24 @@ describe("initializeNovelDatabase", () => {
       "novel_continuity_states", "chapter_continuity_events",
       "delivery_settings", "delivery_targets", "delivery_jobs",
     ]));
+  });
+
+  it("seeds the built-in fantasy high-conflict prompt scheme", () => {
+    const sqlite = new Database(":memory:");
+    initializeNovelDatabase(sqlite);
+
+    expect(sqlite.prepare("select name,description,is_system,is_default from prompt_schemes where id=?")
+      .get(FANTASY_CONFLICT_SCHEME_ID)).toMatchObject({
+      name: "女频幻想·强冲突修罗场",
+      is_system: 1,
+      is_default: 0,
+    });
+    const templates = sqlite.prepare("select key,template from prompt_scheme_templates where scheme_id=?")
+      .all(FANTASY_CONFLICT_SCHEME_ID) as Array<{ key: string; template: string }>;
+    expect(templates).toHaveLength(promptTemplateKeyValues.length);
+    expect(new Set(templates.map((row) => row.key))).toEqual(new Set(promptTemplateKeyValues));
+    expect(templates.find((row) => row.key === "settings")?.template).toContain("不要追求百科全书式");
+    expect(templates.find((row) => row.key === "drafts")?.template).toContain("危险角色保留自己的目标");
   });
 
   it("adds work position columns to an existing novels table", () => {

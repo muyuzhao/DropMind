@@ -2,6 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { DEFAULT_PROMPT_TEMPLATES } from "../../modules/novels/templates";
+import {
+  FANTASY_CONFLICT_PROMPT_TEMPLATES,
+  FANTASY_CONFLICT_SCHEME_DESCRIPTION,
+  FANTASY_CONFLICT_SCHEME_ID,
+  FANTASY_CONFLICT_SCHEME_NAME,
+} from "../../modules/novels/fantasy-conflict-templates";
 import { migrateLegacyBatchTemplate } from "../../modules/novels/batch-workflow-migration";
 import { stripLegacyPlaceholders } from "../../modules/novels/structured-prompts";
 import { promptTemplateKeyValues, type StepKey } from "./schema";
@@ -153,6 +159,11 @@ export function seedDefaultPromptScheme(sqlite: Database.Database) {
   sqlite.prepare("update prompt_schemes set description=?,updated_at=? where id=? and description<>?").run("内置七步提示词", now, SYSTEM_SCHEME_ID, "内置七步提示词");
   const insert = sqlite.prepare("insert or ignore into prompt_scheme_templates (id,scheme_id,key,template,created_at,updated_at) values (?,?,?,?,?,?)");
   for (const [key, template] of Object.entries(DEFAULT_PROMPT_TEMPLATES)) insert.run(`${SYSTEM_SCHEME_ID}-${key}`, SYSTEM_SCHEME_ID, key, template, now, now);
+  sqlite.prepare("insert or ignore into prompt_schemes (id,name,description,is_system,is_default,created_at,updated_at) values (?,?,?,?,?,?,?)")
+    .run(FANTASY_CONFLICT_SCHEME_ID, FANTASY_CONFLICT_SCHEME_NAME, FANTASY_CONFLICT_SCHEME_DESCRIPTION, 1, 0, now, now);
+  for (const [key, template] of Object.entries(FANTASY_CONFLICT_PROMPT_TEMPLATES)) {
+    insert.run(`${FANTASY_CONFLICT_SCHEME_ID}-${key}`, FANTASY_CONFLICT_SCHEME_ID, key, template, now, now);
+  }
 }
 
 function ensurePublishPromptTemplates(sqlite: Database.Database) {
