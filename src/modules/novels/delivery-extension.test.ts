@@ -34,7 +34,7 @@ describe("Fanqie delivery extension formatting", () => {
 
   it("loads the formatter before the content script", () => {
     const manifest = JSON.parse(fs.readFileSync(path.join(process.cwd(), "browser-extension", "fanqie-delivery", "manifest.json"), "utf8"));
-    expect(manifest.version).toBe("0.3.0");
+    expect(manifest.version).toBe("0.3.1");
     expect(manifest.content_scripts[0].js).toEqual(["format.js", "publisher.js", "content.js"]);
   });
 
@@ -53,5 +53,13 @@ describe("Fanqie delivery extension formatting", () => {
     expect(publisher().PUBLISH_PLAN).toMatchObject({ typoAction: "提交", detectionAction: "仅基础检测", aiOption: "否", publishTime: "12:00" });
     expect(publisher().validPublishDate("2026-07-20")).toBe(true);
     expect(publisher().validPublishDate("2026-02-30")).toBe(false);
+  });
+
+  it("locates each publishing dialog by both its prompt and expected action", () => {
+    const publisherSource = fs.readFileSync(path.join(process.cwd(), "browser-extension", "fanqie-delivery", "publisher.js"), "utf8");
+    expect(publisherSource).toContain('findDialog("检测到你还有错别字未修改", [PUBLISH_PLAN.typoAction])');
+    expect(publisherSource).toContain('findDialog("请选择内容检测方式", [PUBLISH_PLAN.detectionAction])');
+    expect(publisherSource).toContain('findDialog("发布设置", ["确认发布"])');
+    expect(publisherSource).toContain("dialogAncestors(text)");
   });
 });

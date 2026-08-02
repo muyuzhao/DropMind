@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DropMind 番茄投递",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "从本机 DropMind 领取章节，并按作者选择的日期自动完成番茄单章定时发布。",
   "permissions": ["storage"],
   "host_permissions": [
