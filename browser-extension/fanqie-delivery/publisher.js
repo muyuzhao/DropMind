@@ -40,17 +40,46 @@
     return leaf;
   }
 
-  function findDialog(text) {
-    const selectors = "[role='dialog'],[aria-modal='true'],[class*='modal'],[class*='dialog']";
-    const semantic = [...document.querySelectorAll(selectors)]
+  function hasButton(root, label) {
+    return [...root.querySelectorAll("button,[role='button'],a,[tabindex]")]
+      .filter(visible)
+      .some((element) => normalize(element.textContent).includes(normalize(label)));
+  }
+
+  function dialogAncestors(text) {
+    const textNodes = [...document.querySelectorAll("h1,h2,h3,h4,label,span,p,div")]
       .filter(visible)
       .filter((element) => normalize(element.textContent).includes(normalize(text)))
       .sort((left, right) => area(left) - area(right));
-    if (semantic[0]) return semantic[0];
-    return [...document.querySelectorAll("section,div")]
-      .filter(visible)
-      .filter((element) => normalize(element.textContent).includes(normalize(text)) && element.querySelector("button,[role='button']"))
-      .sort((left, right) => area(left) - area(right))[0] || null;
+    const candidates = new Set();
+    for (const textNode of textNodes) {
+      let current = textNode;
+      for (let depth = 0; current && current !== document.body && depth < 12; depth += 1, current = current.parentElement) {
+        if (visible(current)) candidates.add(current);
+      }
+    }
+    return [...candidates];
+  }
+
+  function findDialog(text, expectedActions = []) {
+    const selectors = "[role='dialog'],[aria-modal='true'],[class*='modal'],[class*='dialog']";
+    const candidates = [...new Set([
+      ...dialogAncestors(text),
+      ...[...document.querySelectorAll(selectors)]
+        .filter(visible)
+        .filter((element) => normalize(element.textContent).includes(normalize(text))),
+    ])];
+    const withExpectedAction = expectedActions.length
+      ? candidates.filter((element) => expectedActions.some((action) => hasButton(element, action)))
+      : [];
+    const actionable = candidates.filter((element) => element.querySelector("button,[role='button'],a,[tabindex]"));
+    const pool = withExpectedAction.length ? withExpectedAction : actionable;
+    return pool.sort((left, right) => {
+      const leftSemantic = left.matches(selectors) ? 1 : 0;
+      const rightSemantic = right.matches(selectors) ? 1 : 0;
+      if (leftSemantic !== rightSemantic) return rightSemantic - leftSemantic;
+      return area(left) - area(right);
+    })[0] || null;
   }
 
   function waitFor(find, description, timeout = 20000) {
@@ -187,11 +216,11 @@
   }
 
   function findPublishStage() {
-    const typo = findDialog("检测到你还有错别字未修改");
+    const typo = findDialog("检测到你还有错别字未修改", [PUBLISH_PLAN.typoAction]);
     if (typo) return { kind: "typo", dialog: typo };
-    const detection = findDialog("请选择内容检测方式");
+    const detection = findDialog("请选择内容检测方式", [PUBLISH_PLAN.detectionAction]);
     if (detection) return { kind: "detection", dialog: detection };
-    const settings = findDialog("发布设置");
+    const settings = findDialog("发布设置", ["确认发布"]);
     if (settings) return { kind: "settings", dialog: settings };
     return null;
   }
@@ -222,7 +251,7 @@
         await waitUntilChanged(stage.dialog, "请选择内容检测方式");
       }
     }
-    if (!settingsDialog) settingsDialog = await waitFor(() => findDialog("发布设置"), "发布设置");
+    if (!settingsDialog) settingsDialog = await waitFor(() => findDialog("发布设置", ["确认发布"]), "发布设置");
 
     onProgress(`正在设置 ${publishDate} 12:00 发布，AI 选择“否”…`);
     await configurePublishing(settingsDialog, publishDate);
